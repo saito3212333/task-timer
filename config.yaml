@@ -1,0 +1,20 @@
+# Windows本番用 設定ファイル
+
+# 画面の設定
+window:
+  title: "予実管理タイマー"
+  width: 380
+  height: 480
+  always_on_top: true
+  appearance_mode: "dark" # 白背景が良い場合は "light" に変更してください
+  color_theme: "blue"
+
+# 常に表示させておく固定タスク（アウトルックより優先して一番上に表示されます）
+fixed_tasks:
+  - "⚡ 雑務（急な電話・チャット・相談対応）"
+  - "🔄 ルーティン（出勤入力・メールチェック）"
+  - "☕ 休憩（中抜け等）"
+
+# アウトルックから読み込む最大件数
+outlook:
+  max_projects: 20
