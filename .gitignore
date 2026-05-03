@@ -1,0 +1,32 @@
+# venv
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv
+# uv.lock is committed (reproducibility)
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# App data (per-machine, never commit)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+.env
+.env.local
