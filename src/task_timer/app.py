@@ -5,7 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from task_timer.db import Database, connect
-from task_timer.ui.manager_window import ManagerWindow
+from task_timer.ui.timer_window import TimerWindow
 
 
 def main() -> None:
@@ -13,6 +13,6 @@ def main() -> None:
     db = Database(conn)
 
     app = QApplication(sys.argv)
-    window = ManagerWindow(db)
+    window = TimerWindow(db)
     window.show()
     sys.exit(app.exec())
