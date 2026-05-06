@@ -233,7 +233,7 @@ uv run task-timer
 
 ### テストデータ
 
-`data/task_timer.db` に「PEARLサイト リダイレクト」プロジェクトのデータが入っている。
+`data/task_timer.db` にサンプルプロジェクト・タスクのデータが入っている。
 リセット：`rm -f data/task_timer.db data/task_timer.db-wal data/task_timer.db-shm`
 
 ---
