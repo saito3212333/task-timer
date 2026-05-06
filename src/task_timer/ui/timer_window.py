@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QBrush, QColor, QFont, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -18,6 +18,16 @@ from PySide6.QtWidgets import (
 
 from task_timer.db import Database
 from task_timer.models import TimeLog
+
+
+PHASE_COLORS = [
+    "#3498db",  # blue
+    "#e67e22",  # orange
+    "#9b59b6",  # purple
+    "#1abc9c",  # teal
+    "#e74c3c",  # red
+    "#f39c12",  # amber
+]
 
 
 class TimerWindow(QMainWindow):
@@ -50,16 +60,14 @@ class TimerWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        # ドロップダウン
+        # プロジェクト・タスク（2段）
         self._cmb_project = QComboBox()
-        self._cmb_phase = QComboBox()
         self._cmb_task = QComboBox()
-        for cmb in [self._cmb_project, self._cmb_phase, self._cmb_task]:
+        for cmb in [self._cmb_project, self._cmb_task]:
             cmb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             layout.addWidget(cmb)
 
         self._cmb_project.currentIndexChanged.connect(self._on_project_changed)
-        self._cmb_phase.currentIndexChanged.connect(self._on_phase_changed)
         self._cmb_task.currentIndexChanged.connect(self._update_start_button)
 
         # 時計表示
@@ -90,6 +98,12 @@ class TimerWindow(QMainWindow):
         btn_row.addWidget(self._btn_stop)
         layout.addLayout(btn_row)
 
+        # タスク完了ボタン
+        self._btn_done = QPushButton("✓  このタスクを完了")
+        self._btn_done.setFixedHeight(36)
+        self._btn_done.clicked.connect(self._on_complete_task)
+        layout.addWidget(self._btn_done)
+
         # 管理画面ボタン
         self._btn_manager = QPushButton("管理画面を開く")
         self._btn_manager.setFixedHeight(36)
@@ -108,31 +122,66 @@ class TimerWindow(QMainWindow):
 
     def _on_project_changed(self) -> None:
         project_id = self._cmb_project.currentData()
-        self._cmb_phase.blockSignals(True)
-        self._cmb_phase.clear()
-        if project_id is not None:
-            for ph in self.db.list_phases(project_id):
-                self._cmb_phase.addItem(ph.name, userData=ph.id)
-        self._cmb_phase.blockSignals(False)
-        self._on_phase_changed()
+        self._reload_tasks(project_id)
 
-    def _on_phase_changed(self) -> None:
-        phase_id = self._cmb_phase.currentData()
-        self._cmb_task.clear()
-        if phase_id is not None:
-            for t in self.db.list_tasks(phase_id):
-                if t.status != "done":
-                    self._cmb_task.addItem(t.name, userData=t.id)
+    def _reload_tasks(self, project_id: int | None) -> None:
+        """タスクドロップダウンをフェーズごとにグループ化して構築する。"""
+        self._cmb_task.blockSignals(True)
+        model = QStandardItemModel(self._cmb_task)
+        first_task_row: int | None = None
+
+        if project_id is not None:
+            phases = self.db.list_phases(project_id)
+            for p_idx, phase in enumerate(phases):
+                tasks = [t for t in self.db.list_tasks(phase.id) if t.status != "done"]
+                if not tasks:
+                    continue
+
+                color = QColor(PHASE_COLORS[p_idx % len(PHASE_COLORS)])
+
+                # フェーズヘッダー（選択不可）
+                header = QStandardItem(f"── {phase.name} ──")
+                header.setSelectable(False)
+                header.setEnabled(False)
+                hf = header.font()
+                hf.setBold(True)
+                header.setFont(hf)
+                header.setForeground(QBrush(color))
+                model.appendRow(header)
+
+                # タスク（フェーズの色を前景色に）
+                for t in tasks:
+                    item = QStandardItem(f"   {t.name}")
+                    item.setData(t.id, Qt.UserRole)
+                    item.setForeground(QBrush(color))
+                    model.appendRow(item)
+                    if first_task_row is None:
+                        first_task_row = model.rowCount() - 1
+
+        self._cmb_task.setModel(model)
+        if first_task_row is not None:
+            self._cmb_task.setCurrentIndex(first_task_row)
+        else:
+            self._cmb_task.setCurrentIndex(-1)
+        self._cmb_task.blockSignals(False)
         self._update_start_button()
 
+    def _current_task_id(self) -> int | None:
+        idx = self._cmb_task.currentIndex()
+        if idx < 0:
+            return None
+        data = self._cmb_task.itemData(idx, Qt.UserRole)
+        return data if isinstance(data, int) else None
+
     def _update_start_button(self) -> None:
-        has_task = self._cmb_task.currentData() is not None
+        has_task = self._current_task_id() is not None
         self._btn_start.setEnabled(has_task and not self._running)
+        self._btn_done.setEnabled(has_task and not self._running)
 
     # ──────────────────────────────── タイマー操作
 
     def _on_start(self) -> None:
-        task_id = self._cmb_task.currentData()
+        task_id = self._current_task_id()
         if task_id is None:
             return
         self._started_at = datetime.now()
@@ -141,8 +190,8 @@ class TimerWindow(QMainWindow):
         self._tick_timer.start()
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
+        self._btn_done.setEnabled(False)
         self._cmb_project.setEnabled(False)
-        self._cmb_phase.setEnabled(False)
         self._cmb_task.setEnabled(False)
         self._lbl_status.setText("計測中…")
         self._lbl_status.setStyleSheet("color: #2ecc71; font-size: 13px;")
@@ -155,7 +204,7 @@ class TimerWindow(QMainWindow):
         ended_at = datetime.now()
         duration = int((ended_at - self._started_at).total_seconds())
 
-        task_id = self._cmb_task.currentData()
+        task_id = self._current_task_id()
         log = TimeLog(
             task_id=task_id,
             started_at=self._started_at,
@@ -170,8 +219,8 @@ class TimerWindow(QMainWindow):
 
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._btn_done.setEnabled(self._current_task_id() is not None)
         self._cmb_project.setEnabled(True)
-        self._cmb_phase.setEnabled(True)
         self._cmb_task.setEnabled(True)
         self._lbl_status.setText(f"保存しました（{self._fmt(duration)}）")
         self._lbl_status.setStyleSheet("color: gray; font-size: 13px;")
@@ -187,6 +236,36 @@ class TimerWindow(QMainWindow):
         h, rem = divmod(sec, 3600)
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
+
+    # ──────────────────────────────── タスク完了
+
+    def _on_complete_task(self) -> None:
+        if self._running:
+            return
+        task_id = self._current_task_id()
+        if task_id is None:
+            return
+        task = self.db.get_task(task_id)
+        reply = QMessageBox.question(
+            self,
+            "タスクを完了",
+            f"「{task.name}」を完了にしますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.db.update_task(task_id, status="done")
+        self._lbl_status.setText(f"完了：{task.name}")
+        self._lbl_status.setStyleSheet("color: gray; font-size: 13px;")
+
+        # ドロップダウンから除外（再構築）
+        self._reload_tasks(self._cmb_project.currentData())
+
+        # カンバンが開いていれば自動更新
+        if self._manager_window is not None and self._manager_window.isVisible():
+            self._manager_window._reload_board()
 
     # ──────────────────────────────── 管理画面
 

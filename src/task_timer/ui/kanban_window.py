@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QCalendarWidget,
     QCheckBox,
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +57,169 @@ _BTN_DANGER = """
 
 
 # ---------------------------------------------------------------------------
+# Deadline helpers / dialog
+# ---------------------------------------------------------------------------
+
+def _preset_today() -> date:
+    return date.today()
+
+def _preset_tomorrow() -> date:
+    return date.today() + timedelta(days=1)
+
+def _preset_this_weekend() -> date:
+    """今週土曜（土曜なら今日、日曜なら6日後）"""
+    today = date.today()
+    return today + timedelta(days=(5 - today.weekday()) % 7)
+
+def _preset_next_monday() -> date:
+    today = date.today()
+    return today + timedelta(days=7 - today.weekday())
+
+
+class DeadlinePicker(QDialog):
+    """プリセット4種＋カレンダーで締切を選ぶダイアログ。"""
+
+    def __init__(self, current: date | None, allow_clear: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("締切を設定")
+        self._result: date | None = current
+        self._cleared: bool = False
+
+        # 親のCSS継承を避け、明示的なライトテーマを当てる
+        self.setStyleSheet(f"""
+            QDialog {{ background: white; }}
+            QLabel  {{ color: {TEXT}; background: transparent; }}
+            QCalendarWidget QWidget {{ color: {TEXT}; }}
+            QCalendarWidget QToolButton {{
+                color: {TEXT}; background: white;
+                font-size: 13px; padding: 4px;
+            }}
+            QCalendarWidget QToolButton::menu-indicator {{ image: none; }}
+            QCalendarWidget QSpinBox {{ color: {TEXT}; background: white; }}
+            QCalendarWidget QAbstractItemView:enabled {{
+                color: {TEXT}; background: white;
+                selection-background-color: {ACCENT};
+                selection-color: white;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        presets = QHBoxLayout()
+        for label, fn in [
+            ("今日", _preset_today),
+            ("明日", _preset_tomorrow),
+            ("今週末", _preset_this_weekend),
+            ("来週月曜", _preset_next_monday),
+        ]:
+            btn = QPushButton(label)
+            btn.setStyleSheet(_BTN_STYLE)
+            btn.clicked.connect(lambda _=False, f=fn: self._select(f()))
+            presets.addWidget(btn)
+        layout.addLayout(presets)
+
+        self.cal = QCalendarWidget()
+        self.cal.setGridVisible(True)
+        # 左の週番号列を消す
+        self.cal.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        # 月/年ボタンの幅を絞ってナビゲーションの空白をなくす
+        for name, w in [
+            ("qt_calendar_monthbutton", 60),
+            ("qt_calendar_yearbutton",  70),
+        ]:
+            btn = self.cal.findChild(QToolButton, name)
+            if btn:
+                btn.setMaximumWidth(w)
+        if current:
+            self.cal.setSelectedDate(QDate(current.year, current.month, current.day))
+        self.cal.clicked.connect(lambda qd: self._select(qd.toPython()))
+        layout.addWidget(self.cal)
+
+        _NEUTRAL_BTN = f"""
+            QPushButton {{
+                background: #e2e8f0; color: {TEXT};
+                border: 1px solid #cbd5e1; border-radius: 5px; padding: 5px 12px;
+            }}
+            QPushButton:hover {{ background: #cbd5e1; }}
+        """
+        bottom = QHBoxLayout()
+        if allow_clear:
+            btn_clear = QPushButton("クリア")
+            btn_clear.setStyleSheet(_NEUTRAL_BTN)
+            btn_clear.clicked.connect(self._on_clear)
+            bottom.addWidget(btn_clear)
+        bottom.addStretch()
+        btn_cancel = QPushButton("キャンセル")
+        btn_cancel.setStyleSheet(_NEUTRAL_BTN)
+        btn_cancel.clicked.connect(self.reject)
+        bottom.addWidget(btn_cancel)
+        btn_ok = QPushButton("OK")
+        btn_ok.setStyleSheet(_BTN_STYLE)
+        btn_ok.clicked.connect(self.accept)
+        bottom.addWidget(btn_ok)
+        layout.addLayout(bottom)
+
+    def _select(self, d: date) -> None:
+        self._result = d
+        self._cleared = False
+        self.cal.setSelectedDate(QDate(d.year, d.month, d.day))
+
+    def _on_clear(self) -> None:
+        self._cleared = True
+        self.accept()
+
+    def result_value(self) -> tuple[bool, date | None]:
+        """(cleared, new_date) を返す。clearedがTrueならNoneを設定。"""
+        if self._cleared:
+            return True, None
+        return False, self._result
+
+
+class DeadlineBadge(QPushButton):
+    """締切日を色付きで表示するクリック可能バッジ。"""
+
+    def __init__(self, deadline: date | None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFlat(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.set_deadline(deadline)
+
+    def set_deadline(self, deadline: date | None) -> None:
+        if deadline is None:
+            self.setText("+ 締切")
+            self.setStyleSheet(
+                f"color: {MUTED}; background: transparent; border: none;"
+                " padding: 1px 4px; font-size: 11px;"
+            )
+            return
+        delta = (deadline - date.today()).days
+        if delta == 0:
+            text = "今日"
+        elif delta == 1:
+            text = "明日"
+        elif delta == -1:
+            text = "昨日"
+        elif -7 < delta < 0:
+            text = f"{-delta}日前"
+        else:
+            text = f"{deadline.month}/{deadline.day}"
+
+        if delta <= 0:
+            color = "#ef4444"  # 期限切れ・今日 → 赤
+        elif delta <= 3:
+            color = "#f59e0b"  # 3日以内 → オレンジ
+        else:
+            color = MUTED
+        self.setText(text)
+        self.setStyleSheet(
+            f"color: {color}; background: transparent; border: none;"
+            " padding: 1px 4px; font-size: 11px;"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Task card  （①インライン編集）
 # ---------------------------------------------------------------------------
 
@@ -66,8 +232,9 @@ class TaskCard(QWidget):
         self.db = db
         self._committing = False
 
+        self.setObjectName("TaskCard")
         self.setStyleSheet(
-            f"background: {CARD_BG}; border: 1px solid #cbd5e1; border-radius: 6px;"
+            f"#TaskCard {{ background: {CARD_BG}; border: 1px solid #cbd5e1; border-radius: 6px; }}"
         )
 
         layout = QHBoxLayout(self)
@@ -87,6 +254,9 @@ class TaskCard(QWidget):
         self.name_edit.returnPressed.connect(self._commit_edit)
         self._apply_name_style()
 
+        self.deadline_badge = DeadlineBadge(task.deadline)
+        self.deadline_badge.clicked.connect(self._open_deadline_picker)
+
         self.btn_del = QPushButton("×")
         self.btn_del.setFixedSize(20, 20)
         self.btn_del.setFlat(True)
@@ -97,6 +267,7 @@ class TaskCard(QWidget):
 
         layout.addWidget(self.check)
         layout.addWidget(self.name_edit, 1)
+        layout.addWidget(self.deadline_badge)
         layout.addWidget(self.btn_del)
 
     # ── event filter（ダブルクリック＆フォーカスアウト）─────────────────
@@ -144,6 +315,21 @@ class TaskCard(QWidget):
         self.db.update_task(self.task.id, status="done" if checked else "active")
         self._apply_name_style()
 
+    # ── deadline ──────────────────────────────────────────────────────────
+
+    def _open_deadline_picker(self) -> None:
+        dlg = DeadlinePicker(self.task.deadline, allow_clear=True, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        cleared, new_date = dlg.result_value()
+        if cleared:
+            self.db.update_task(self.task.id, deadline=None)
+            self.task.deadline = None
+        elif new_date is not None and new_date != self.task.deadline:
+            self.db.update_task(self.task.id, deadline=new_date)
+            self.task.deadline = new_date
+        self.deadline_badge.set_deadline(self.task.deadline)
+
     def _apply_name_style(self) -> None:
         if self.check.isChecked():
             self.name_edit.setStyleSheet(
@@ -177,7 +363,10 @@ class PhaseColumn(QWidget):
         self.phase = phase
 
         self.setFixedWidth(240)
-        self.setStyleSheet(f"background: {COL_BG}; border-radius: 10px;")
+        self.setObjectName("PhaseColumn")
+        self.setStyleSheet(
+            f"#PhaseColumn {{ background: {COL_BG}; border-radius: 10px; }}"
+        )
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -193,6 +382,9 @@ class PhaseColumn(QWidget):
         title.setWordWrap(True)
         title.setStyleSheet(f"color: {TEXT}; background: transparent;")
 
+        self.deadline_badge = DeadlineBadge(phase.deadline)
+        self.deadline_badge.clicked.connect(self._open_deadline_picker)
+
         btn_del = QPushButton("×")
         btn_del.setFixedSize(22, 22)
         btn_del.setFlat(True)
@@ -200,6 +392,7 @@ class PhaseColumn(QWidget):
         btn_del.clicked.connect(lambda: self.phase_deleted.emit(phase.id))
 
         header.addWidget(title, 1)
+        header.addWidget(self.deadline_badge)
         header.addWidget(btn_del)
         outer.addLayout(header)
 
@@ -233,8 +426,18 @@ class PhaseColumn(QWidget):
     def _on_add(self) -> None:
         name = self.add_input.text().strip()
         if name:
-            self.task_added.emit(self.phase.id, name)
             self.add_input.clear()
+            self.task_added.emit(self.phase.id, name)
+
+    def _open_deadline_picker(self) -> None:
+        dlg = DeadlinePicker(self.phase.deadline, allow_clear=False, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        _, new_date = dlg.result_value()
+        if new_date is not None and new_date != self.phase.deadline:
+            self.db.update_phase(self.phase.id, deadline=new_date)
+            self.phase.deadline = new_date
+            self.deadline_badge.set_deadline(new_date)
 
 
 # ---------------------------------------------------------------------------
@@ -360,17 +563,22 @@ class KanbanWindow(QMainWindow):
 
     # ── slots ─────────────────────────────────────────────────────────────
 
+    def _schedule_reload(self) -> None:
+        """シグナルから直接 _reload_board を呼ぶと、emit中のウィジェットが
+        破棄されてクラッシュする。次のイベントループに遅延させる。"""
+        QTimer.singleShot(0, self._reload_board)
+
     def _on_task_added(self, phase_id: int, name: str) -> None:
         existing = self.db.list_tasks(phase_id)
         order = (max((t.order_index for t in existing), default=-1)) + 1
         self.db.create_task(Task(phase_id=phase_id, name=name, order_index=order))
-        self._reload_board()
+        self._schedule_reload()
 
     def _on_task_deleted(self, task_id: int) -> None:
         reply = QMessageBox.question(self, "削除確認", "このタスクを削除しますか？")
         if reply == QMessageBox.StandardButton.Yes:
             self.db.delete_task(task_id)
-            self._reload_board()
+            self._schedule_reload()
 
     def _on_phase_deleted(self, phase_id: int) -> None:
         reply = QMessageBox.question(
@@ -378,7 +586,7 @@ class KanbanWindow(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.db.delete_phase(phase_id)
-            self._reload_board()
+            self._schedule_reload()
 
     def _add_project(self) -> None:
         name, ok = QInputDialog.getText(self, "プロジェクト追加", "名前:")
