@@ -262,6 +262,31 @@ class Database:
         ).fetchall()
         return [_row_time_log(r) for r in rows]
 
+    def total_seconds_for_phase(self, phase_id: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(tl.duration_sec), 0) AS s
+            FROM time_logs tl
+            JOIN tasks t ON tl.task_id = t.id
+            WHERE t.phase_id = ?
+            """,
+            (phase_id,),
+        ).fetchone()
+        return int(row["s"] or 0)
+
+    def total_seconds_for_project(self, project_id: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(tl.duration_sec), 0) AS s
+            FROM time_logs tl
+            JOIN tasks t  ON tl.task_id = t.id
+            JOIN phases p ON t.phase_id = p.id
+            WHERE p.project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+        return int(row["s"] or 0)
+
     # ------------------------------------------------------------------
     # tree view (for management UI)
     # ------------------------------------------------------------------

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from PySide6.QtCore import QDate, QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
@@ -123,6 +123,13 @@ class DeadlinePicker(QDialog):
         self.cal.setGridVisible(True)
         # 左の週番号列を消す
         self.cal.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        # 土曜=青・日曜=赤
+        sat_fmt = QTextCharFormat()
+        sat_fmt.setForeground(QColor("#2563eb"))
+        self.cal.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, sat_fmt)
+        sun_fmt = QTextCharFormat()
+        sun_fmt.setForeground(QColor("#dc2626"))
+        self.cal.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, sun_fmt)
         # 月/年ボタンの幅を絞ってナビゲーションの空白をなくす
         for name, w in [
             ("qt_calendar_monthbutton", 60),
@@ -224,7 +231,10 @@ class DeadlineBadge(QPushButton):
 # ---------------------------------------------------------------------------
 
 class TaskCard(QWidget):
-    deleted = Signal(int)  # task_id
+    deleted          = Signal(int)        # task_id
+    status_changed   = Signal(int, bool)  # task_id, is_done
+    move_up          = Signal(int)        # task_id
+    move_down        = Signal(int)        # task_id
 
     def __init__(self, task: Task, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -239,7 +249,7 @@ class TaskCard(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
         self.check = QCheckBox()
         self.check.setChecked(task.status == "done")
@@ -257,6 +267,22 @@ class TaskCard(QWidget):
         self.deadline_badge = DeadlineBadge(task.deadline)
         self.deadline_badge.clicked.connect(self._open_deadline_picker)
 
+        _ARROW_STYLE = (
+            f"color: {MUTED}; font-size: 12px; background: transparent;"
+            " border: none; padding: 0px;"
+        )
+        self.btn_up = QPushButton("▲")
+        self.btn_up.setFixedSize(18, 20)
+        self.btn_up.setFlat(True)
+        self.btn_up.setStyleSheet(_ARROW_STYLE)
+        self.btn_up.clicked.connect(lambda: self.move_up.emit(task.id))
+
+        self.btn_down = QPushButton("▼")
+        self.btn_down.setFixedSize(18, 20)
+        self.btn_down.setFlat(True)
+        self.btn_down.setStyleSheet(_ARROW_STYLE)
+        self.btn_down.clicked.connect(lambda: self.move_down.emit(task.id))
+
         self.btn_del = QPushButton("×")
         self.btn_del.setFixedSize(20, 20)
         self.btn_del.setFlat(True)
@@ -268,6 +294,8 @@ class TaskCard(QWidget):
         layout.addWidget(self.check)
         layout.addWidget(self.name_edit, 1)
         layout.addWidget(self.deadline_badge)
+        layout.addWidget(self.btn_up)
+        layout.addWidget(self.btn_down)
         layout.addWidget(self.btn_del)
 
     # ── event filter（ダブルクリック＆フォーカスアウト）─────────────────
@@ -312,8 +340,11 @@ class TaskCard(QWidget):
     # ── toggle ────────────────────────────────────────────────────────────
 
     def _on_toggle(self, checked: bool) -> None:
-        self.db.update_task(self.task.id, status="done" if checked else "active")
+        new_status = "done" if checked else "active"
+        self.db.update_task(self.task.id, status=new_status)
+        self.task.status = new_status
         self._apply_name_style()
+        self.status_changed.emit(self.task.id, checked)
 
     # ── deadline ──────────────────────────────────────────────────────────
 
@@ -347,9 +378,12 @@ class TaskCard(QWidget):
 # ---------------------------------------------------------------------------
 
 class PhaseColumn(QWidget):
-    task_added   = Signal(int, str)  # phase_id, name
-    task_deleted = Signal(int)       # task_id
-    phase_deleted = Signal(int)      # phase_id
+    task_added           = Signal(int, str)   # phase_id, name
+    task_deleted         = Signal(int)        # task_id
+    task_status_changed  = Signal(int, bool)  # task_id, is_done
+    task_move_up         = Signal(int)        # task_id
+    task_move_down       = Signal(int)        # task_id
+    phase_deleted        = Signal(int)        # phase_id
 
     def __init__(
         self,
@@ -402,6 +436,9 @@ class PhaseColumn(QWidget):
         for t in tasks:
             card = TaskCard(t, db)
             card.deleted.connect(self.task_deleted.emit)
+            card.status_changed.connect(self.task_status_changed.emit)
+            card.move_up.connect(self.task_move_up.emit)
+            card.move_down.connect(self.task_move_down.emit)
             self.cards_layout.addWidget(card)
         outer.addLayout(self.cards_layout)
 
@@ -543,6 +580,9 @@ class KanbanWindow(QMainWindow):
                     col = PhaseColumn(self.db, pwt.phase, pwt.tasks)
                     col.task_added.connect(self._on_task_added)
                     col.task_deleted.connect(self._on_task_deleted)
+                    col.task_status_changed.connect(self._on_task_status_changed)
+                    col.task_move_up.connect(self._on_task_move_up)
+                    col.task_move_down.connect(self._on_task_move_down)
                     col.phase_deleted.connect(self._on_phase_deleted)
                     layout.addWidget(col)
 
@@ -579,6 +619,65 @@ class KanbanWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self.db.delete_task(task_id)
             self._schedule_reload()
+
+    def _on_task_status_changed(self, task_id: int, is_done: bool) -> None:
+        # E: 完了にしたらフェーズの末尾に移動
+        if is_done:
+            task = self.db.get_task(task_id)
+            siblings = self.db.list_tasks(task.phase_id)
+            max_order = max(
+                (t.order_index for t in siblings if t.id != task_id), default=-1
+            )
+            self.db.update_task(task_id, order_index=max_order + 1)
+        self._schedule_reload()
+
+    def _on_task_move_up(self, task_id: int) -> None:
+        task = self.db.get_task(task_id)
+        siblings = self.db.list_tasks(task.phase_id)
+        idx = next((i for i, t in enumerate(siblings) if t.id == task_id), -1)
+        if idx < 0:
+            return
+        if idx > 0:
+            other = siblings[idx - 1]
+            a, b = siblings[idx].order_index, other.order_index
+            self.db.update_task(other.id, order_index=a)
+            self.db.update_task(task_id, order_index=b)
+        else:
+            # フェーズ間移動：前のフェーズの末尾へ
+            phase = self.db.get_phase(task.phase_id)
+            phases = self.db.list_phases(phase.project_id)
+            p_idx = next((i for i, p in enumerate(phases) if p.id == phase.id), -1)
+            if p_idx <= 0:
+                return
+            target = phases[p_idx - 1]
+            target_tasks = self.db.list_tasks(target.id)
+            new_order = (max((t.order_index for t in target_tasks), default=-1)) + 1
+            self.db.update_task(task_id, phase_id=target.id, order_index=new_order)
+        self._schedule_reload()
+
+    def _on_task_move_down(self, task_id: int) -> None:
+        task = self.db.get_task(task_id)
+        siblings = self.db.list_tasks(task.phase_id)
+        idx = next((i for i, t in enumerate(siblings) if t.id == task_id), -1)
+        if idx < 0:
+            return
+        if idx < len(siblings) - 1:
+            other = siblings[idx + 1]
+            a, b = siblings[idx].order_index, other.order_index
+            self.db.update_task(other.id, order_index=a)
+            self.db.update_task(task_id, order_index=b)
+        else:
+            # フェーズ間移動：次のフェーズの先頭へ
+            phase = self.db.get_phase(task.phase_id)
+            phases = self.db.list_phases(phase.project_id)
+            p_idx = next((i for i, p in enumerate(phases) if p.id == phase.id), -1)
+            if p_idx < 0 or p_idx >= len(phases) - 1:
+                return
+            target = phases[p_idx + 1]
+            target_tasks = self.db.list_tasks(target.id)
+            min_order = min((t.order_index for t in target_tasks), default=0)
+            self.db.update_task(task_id, phase_id=target.id, order_index=min_order - 1)
+        self._schedule_reload()
 
     def _on_phase_deleted(self, phase_id: int) -> None:
         reply = QMessageBox.question(

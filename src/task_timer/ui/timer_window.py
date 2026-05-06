@@ -44,8 +44,12 @@ class TimerWindow(QMainWindow):
         self._tick_timer.setInterval(1000)
         self._tick_timer.timeout.connect(self._on_tick)
 
+        # 累計表示の状態
+        self._show_totals: bool = False
+        self._total_unit_hours: bool = True  # True=時間, False=人工(8h/日)
+
         self.setWindowTitle("task-timer")
-        self.setFixedSize(380, 480)
+        self.setFixedSize(380, 560)
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
 
         self._build_ui()
@@ -97,6 +101,34 @@ class TimerWindow(QMainWindow):
         btn_row.addWidget(self._btn_start)
         btn_row.addWidget(self._btn_stop)
         layout.addLayout(btn_row)
+
+        # 累計表示トグル + 単位切替
+        totals_btn_row = QHBoxLayout()
+        self._btn_toggle_totals = QPushButton("📊 累計を表示")
+        self._btn_toggle_totals.setCheckable(True)
+        self._btn_toggle_totals.setFixedHeight(28)
+        self._btn_toggle_totals.toggled.connect(self._on_toggle_totals)
+        self._btn_toggle_unit = QPushButton("人工で表示")
+        self._btn_toggle_unit.setCheckable(True)
+        self._btn_toggle_unit.setFixedHeight(28)
+        self._btn_toggle_unit.toggled.connect(self._on_toggle_unit)
+        totals_btn_row.addWidget(self._btn_toggle_totals)
+        totals_btn_row.addWidget(self._btn_toggle_unit)
+        layout.addLayout(totals_btn_row)
+
+        # 累計パネル（折りたたみ可）
+        self._totals_panel = QWidget()
+        tp = QVBoxLayout(self._totals_panel)
+        tp.setContentsMargins(0, 0, 0, 0)
+        tp.setSpacing(2)
+        self._lbl_total_proj  = QLabel("プロジェクト: -")
+        self._lbl_total_phase = QLabel("フェーズ: -")
+        for lbl in (self._lbl_total_proj, self._lbl_total_phase):
+            lbl.setStyleSheet("color: gray; font-size: 12px;")
+            lbl.setAlignment(Qt.AlignCenter)
+            tp.addWidget(lbl)
+        self._totals_panel.setVisible(False)
+        layout.addWidget(self._totals_panel)
 
         # タスク完了ボタン
         self._btn_done = QPushButton("✓  このタスクを完了")
@@ -177,6 +209,7 @@ class TimerWindow(QMainWindow):
         has_task = self._current_task_id() is not None
         self._btn_start.setEnabled(has_task and not self._running)
         self._btn_done.setEnabled(has_task and not self._running)
+        self._refresh_totals()
 
     # ──────────────────────────────── タイマー操作
 
@@ -226,6 +259,7 @@ class TimerWindow(QMainWindow):
         self._lbl_status.setStyleSheet("color: gray; font-size: 13px;")
         self._elapsed_sec = 0
         self._lbl_time.setText("00:00:00")
+        self._refresh_totals()
 
     def _on_tick(self) -> None:
         self._elapsed_sec += 1
@@ -236,6 +270,45 @@ class TimerWindow(QMainWindow):
         h, rem = divmod(sec, 3600)
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
+
+    # ──────────────────────────────── 累計表示
+
+    def _on_toggle_totals(self, checked: bool) -> None:
+        self._show_totals = checked
+        self._totals_panel.setVisible(checked)
+        self._btn_toggle_totals.setText("📊 累計を隠す" if checked else "📊 累計を表示")
+        if checked:
+            self._refresh_totals()
+
+    def _on_toggle_unit(self, checked: bool) -> None:
+        # checked=人工モード、未チェック=時間モード
+        self._total_unit_hours = not checked
+        self._btn_toggle_unit.setText("時間で表示" if checked else "人工で表示")
+        self._refresh_totals()
+
+    def _refresh_totals(self) -> None:
+        if not self._show_totals:
+            return
+        task_id = self._current_task_id()
+        if task_id is None:
+            self._lbl_total_proj.setText("プロジェクト: -")
+            self._lbl_total_phase.setText("フェーズ: -")
+            return
+        task = self.db.get_task(task_id)
+        phase = self.db.get_phase(task.phase_id)
+        proj_sec  = self.db.total_seconds_for_project(phase.project_id)
+        phase_sec = self.db.total_seconds_for_phase(task.phase_id)
+        self._lbl_total_proj.setText(f"プロジェクト: {self._fmt_total(proj_sec)}")
+        self._lbl_total_phase.setText(f"フェーズ: {self._fmt_total(phase_sec)}")
+
+    def _fmt_total(self, sec: int) -> str:
+        if self._total_unit_hours:
+            h, rem = divmod(sec, 3600)
+            m, _ = divmod(rem, 60)
+            return f"{h}h {m:02d}m"
+        # 1人工 = 8時間
+        days = sec / 3600 / 8
+        return f"{days:.2f}人工"
 
     # ──────────────────────────────── タスク完了
 
@@ -262,6 +335,7 @@ class TimerWindow(QMainWindow):
 
         # ドロップダウンから除外（再構築）
         self._reload_tasks(self._cmb_project.currentData())
+        self._refresh_totals()
 
         # カンバンが開いていれば自動更新
         if self._manager_window is not None and self._manager_window.isVisible():
