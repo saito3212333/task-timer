@@ -2,18 +2,30 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from PySide6.QtCore import QDate, QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat
+from PySide6.QtCore import QDate, QEvent, QMimeData, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDrag,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPen,
+    QPixmap,
+    QTextCharFormat,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QCalendarWidget,
     QCheckBox,
     QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -33,6 +45,16 @@ TOPBAR_BG = "#1e293b"
 TEXT      = "#1e293b"
 MUTED     = "#64748b"
 ACCENT    = "#3b82f6"
+
+# 各フェーズ列の薄い背景色（順に循環）
+PHASE_COL_BGS = [
+    "#eff6ff",  # sky
+    "#fff7ed",  # orange
+    "#faf5ff",  # purple
+    "#ecfdf5",  # mint
+    "#fef2f2",  # rose
+    "#fefce8",  # cream
+]
 
 _BTN_STYLE = f"""
     QPushButton {{
@@ -74,6 +96,39 @@ def _preset_this_weekend() -> date:
 def _preset_next_monday() -> date:
     today = date.today()
     return today + timedelta(days=7 - today.weekday())
+
+
+class WeekendCalendar(QCalendarWidget):
+    """土曜=青・日曜=赤を、現在月外の日付にも適用するカレンダー。"""
+
+    _COLOR_SAT = QColor("#2563eb")
+    _COLOR_SUN = QColor("#dc2626")
+    _COLOR_TEXT = QColor(TEXT)
+    _COLOR_SEL_BG = QColor(ACCENT)
+    _COLOR_SEL_FG = QColor("white")
+
+    def paintCell(self, painter: QPainter, rect, qdate: QDate) -> None:  # type: ignore[override]
+        is_selected = qdate == self.selectedDate()
+        in_month    = qdate.month() == self.monthShown() and qdate.year() == self.yearShown()
+        wd = qdate.dayOfWeek()  # Mon=1 ... Sun=7
+
+        if is_selected:
+            painter.fillRect(rect, self._COLOR_SEL_BG)
+            color = QColor(self._COLOR_SEL_FG)
+        else:
+            if wd == 6:
+                color = QColor(self._COLOR_SAT)
+            elif wd == 7:
+                color = QColor(self._COLOR_SUN)
+            else:
+                color = QColor(self._COLOR_TEXT)
+            if not in_month:
+                color.setAlpha(110)
+
+        painter.save()
+        painter.setPen(QPen(color))
+        painter.drawText(rect, Qt.AlignCenter, str(qdate.day()))
+        painter.restore()
 
 
 class DeadlinePicker(QDialog):
@@ -119,11 +174,11 @@ class DeadlinePicker(QDialog):
             presets.addWidget(btn)
         layout.addLayout(presets)
 
-        self.cal = QCalendarWidget()
+        self.cal = WeekendCalendar()
         self.cal.setGridVisible(True)
         # 左の週番号列を消す
         self.cal.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        # 土曜=青・日曜=赤
+        # 曜日ヘッダーの土日色（セル中身は paintCell で着色）
         sat_fmt = QTextCharFormat()
         sat_fmt.setForeground(QColor("#2563eb"))
         self.cal.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, sat_fmt)
@@ -233,14 +288,16 @@ class DeadlineBadge(QPushButton):
 class TaskCard(QWidget):
     deleted          = Signal(int)        # task_id
     status_changed   = Signal(int, bool)  # task_id, is_done
-    move_up          = Signal(int)        # task_id
-    move_down        = Signal(int)        # task_id
+    split_requested  = Signal(int)        # task_id
+
+    MIME_TYPE = "application/x-task-timer-task-id"
 
     def __init__(self, task: Task, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.task = task
         self.db = db
         self._committing = False
+        self._drag_start: QPoint | None = None
 
         self.setObjectName("TaskCard")
         self.setStyleSheet(
@@ -260,28 +317,14 @@ class TaskCard(QWidget):
         self.name_edit.setReadOnly(True)
         self.name_edit.setFrame(False)
         self.name_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.name_edit.setCursor(Qt.OpenHandCursor)
         self.name_edit.installEventFilter(self)
         self.name_edit.returnPressed.connect(self._commit_edit)
         self._apply_name_style()
+        self._adjust_name_font()
 
         self.deadline_badge = DeadlineBadge(task.deadline)
         self.deadline_badge.clicked.connect(self._open_deadline_picker)
-
-        _ARROW_STYLE = (
-            f"color: {MUTED}; font-size: 12px; background: transparent;"
-            " border: none; padding: 0px;"
-        )
-        self.btn_up = QPushButton("▲")
-        self.btn_up.setFixedSize(18, 20)
-        self.btn_up.setFlat(True)
-        self.btn_up.setStyleSheet(_ARROW_STYLE)
-        self.btn_up.clicked.connect(lambda: self.move_up.emit(task.id))
-
-        self.btn_down = QPushButton("▼")
-        self.btn_down.setFixedSize(18, 20)
-        self.btn_down.setFlat(True)
-        self.btn_down.setStyleSheet(_ARROW_STYLE)
-        self.btn_down.clicked.connect(lambda: self.move_down.emit(task.id))
 
         self.btn_del = QPushButton("×")
         self.btn_del.setFixedSize(20, 20)
@@ -294,26 +337,72 @@ class TaskCard(QWidget):
         layout.addWidget(self.check)
         layout.addWidget(self.name_edit, 1)
         layout.addWidget(self.deadline_badge)
-        layout.addWidget(self.btn_up)
-        layout.addWidget(self.btn_down)
         layout.addWidget(self.btn_del)
 
-    # ── event filter（ダブルクリック＆フォーカスアウト）─────────────────
+    # ── event filter（ダブルクリック編集 / フォーカスアウト保存 / ドラッグ開始）
 
     def eventFilter(self, obj, event):
         if obj is self.name_edit:
-            if (
-                event.type() == QEvent.Type.MouseButtonDblClick
-                and self.name_edit.isReadOnly()
-            ):
+            et = event.type()
+            if et == QEvent.Type.MouseButtonDblClick and self.name_edit.isReadOnly():
                 self._start_edit()
                 return True
-            if (
-                event.type() == QEvent.Type.FocusOut
-                and not self.name_edit.isReadOnly()
-            ):
+            if et == QEvent.Type.FocusOut and not self.name_edit.isReadOnly():
                 self._commit_edit()
+            # ドラッグ起点：読み取り専用かつ未完了のときだけ
+            if self.name_edit.isReadOnly() and not self.check.isChecked():
+                if et == QEvent.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+                    self._drag_start = event.position().toPoint()
+                elif et == QEvent.Type.MouseMove and self._drag_start is not None:
+                    if (event.position().toPoint() - self._drag_start).manhattanLength() >= QApplication.startDragDistance():
+                        self._begin_drag()
+                        self._drag_start = None
+                        return True
+                elif et == QEvent.Type.MouseButtonRelease:
+                    self._drag_start = None
         return super().eventFilter(obj, event)
+
+    def _begin_drag(self) -> None:
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(self.MIME_TYPE, str(self.task.id).encode())
+        drag.setMimeData(mime)
+        pixmap = QPixmap(self.size())
+        pixmap.fill(Qt.transparent)
+        self.render(pixmap)
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(20, self.height() // 2))
+        drag.exec(Qt.MoveAction)
+
+    # ── 右クリック → 分解／削除 ────────────────────────────────────────
+
+    def contextMenuEvent(self, event) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background: white;
+                color: {TEXT};
+                border: 1px solid #cbd5e1;
+                padding: 4px 0;
+            }}
+            QMenu::item {{
+                padding: 6px 18px;
+                color: {TEXT};
+            }}
+            QMenu::item:selected {{
+                background: {ACCENT};
+                color: white;
+            }}
+            """
+        )
+        act_split = menu.addAction("分解…")
+        act_del   = menu.addAction("削除")
+        chosen = menu.exec(event.globalPos())
+        if chosen is act_split:
+            self.split_requested.emit(self.task.id)
+        elif chosen is act_del:
+            self.deleted.emit(self.task.id)
 
     def _start_edit(self) -> None:
         self.name_edit.setReadOnly(False)
@@ -331,10 +420,12 @@ class TaskCard(QWidget):
         name = self.name_edit.text().strip()
         if name:
             self.db.update_task(self.task.id, name=name)
+            self.task.name = name
         else:
             self.name_edit.setText(self.task.name)
         self.name_edit.setReadOnly(True)
         self._apply_name_style()
+        self._adjust_name_font()
         self._committing = False
 
     # ── toggle ────────────────────────────────────────────────────────────
@@ -372,24 +463,42 @@ class TaskCard(QWidget):
                 f"color: {TEXT}; background: transparent; border: none;"
             )
 
+    def _adjust_name_font(self) -> None:
+        """利用可能幅に応じてフォントサイズを 13 → 9pt の範囲で縮める。"""
+        text = self.name_edit.text()
+        f = QFont(self.name_edit.font())
+        f.setPointSize(13)
+        available = self.name_edit.width() - 6
+        if text and available > 0:
+            while f.pointSize() > 9:
+                if QFontMetrics(f).horizontalAdvance(text) <= available:
+                    break
+                f.setPointSize(f.pointSize() - 1)
+        self.name_edit.setFont(f)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._adjust_name_font()
+
 
 # ---------------------------------------------------------------------------
 # Phase column
 # ---------------------------------------------------------------------------
 
 class PhaseColumn(QWidget):
-    task_added           = Signal(int, str)   # phase_id, name
-    task_deleted         = Signal(int)        # task_id
-    task_status_changed  = Signal(int, bool)  # task_id, is_done
-    task_move_up         = Signal(int)        # task_id
-    task_move_down       = Signal(int)        # task_id
-    phase_deleted        = Signal(int)        # phase_id
+    task_added           = Signal(int, str)        # phase_id, name
+    task_deleted         = Signal(int)             # task_id
+    task_status_changed  = Signal(int, bool)       # task_id, is_done
+    task_dropped         = Signal(int, int, int)   # task_id, target_phase_id, insert_index
+    task_split_requested = Signal(int)             # task_id
+    phase_deleted        = Signal(int)             # phase_id
 
     def __init__(
         self,
         db: Database,
         phase: Phase,
         tasks: list[Task],
+        index: int = 0,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -398,9 +507,12 @@ class PhaseColumn(QWidget):
 
         self.setFixedWidth(240)
         self.setObjectName("PhaseColumn")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        bg = PHASE_COL_BGS[index % len(PHASE_COL_BGS)]
         self.setStyleSheet(
-            f"#PhaseColumn {{ background: {COL_BG}; border-radius: 10px; }}"
+            f"#PhaseColumn {{ background: {bg}; border-radius: 10px; }}"
         )
+        self.setAcceptDrops(True)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -437,12 +549,17 @@ class PhaseColumn(QWidget):
             card = TaskCard(t, db)
             card.deleted.connect(self.task_deleted.emit)
             card.status_changed.connect(self.task_status_changed.emit)
-            card.move_up.connect(self.task_move_up.emit)
-            card.move_down.connect(self.task_move_down.emit)
+            card.split_requested.connect(self.task_split_requested.emit)
             self.cards_layout.addWidget(card)
         outer.addLayout(self.cards_layout)
 
         outer.addStretch()
+
+        # Drop indicator (overlay; not in layout)
+        self._drop_indicator = QFrame(self)
+        self._drop_indicator.setFixedHeight(3)
+        self._drop_indicator.setStyleSheet(f"background: {ACCENT}; border-radius: 1px;")
+        self._drop_indicator.hide()
 
         # Add task input
         self.add_input = QLineEdit()
@@ -475,6 +592,58 @@ class PhaseColumn(QWidget):
             self.db.update_phase(self.phase.id, deadline=new_date)
             self.phase.deadline = new_date
             self.deadline_badge.set_deadline(new_date)
+
+    # ── drag & drop ──────────────────────────────────────────────────────
+
+    def _cards(self) -> list[QWidget]:
+        items = [self.cards_layout.itemAt(i) for i in range(self.cards_layout.count())]
+        return [it.widget() for it in items if it and it.widget() is not None]
+
+    def _calc_insert_index(self, y: int) -> tuple[int, int]:
+        """y座標に対応する挿入インデックスと、そのY位置を返す。"""
+        cards = self._cards()
+        for i, c in enumerate(cards):
+            top = c.mapTo(self, c.rect().topLeft()).y()
+            mid = top + c.height() / 2
+            if y < mid:
+                return i, top - 2
+        if cards:
+            last = cards[-1]
+            bot = last.mapTo(self, last.rect().topLeft()).y() + last.height()
+            return len(cards), bot
+        # 空フェーズ：カード領域の先頭を見つける
+        layout_top = self.cards_layout.geometry().y()
+        return 0, max(layout_top, 50)
+
+    def _show_drop_indicator(self, y: int) -> None:
+        _, ind_y = self._calc_insert_index(y)
+        self._drop_indicator.setGeometry(8, int(ind_y), self.width() - 16, 3)
+        self._drop_indicator.show()
+        self._drop_indicator.raise_()
+
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasFormat(TaskCard.MIME_TYPE):
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e) -> None:
+        if e.mimeData().hasFormat(TaskCard.MIME_TYPE):
+            self._show_drop_indicator(int(e.position().y()))
+            e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e) -> None:
+        self._drop_indicator.hide()
+
+    def dropEvent(self, e) -> None:
+        if not e.mimeData().hasFormat(TaskCard.MIME_TYPE):
+            return
+        try:
+            task_id = int(bytes(e.mimeData().data(TaskCard.MIME_TYPE)).decode())
+        except (ValueError, UnicodeDecodeError):
+            return
+        index, _ = self._calc_insert_index(int(e.position().y()))
+        self._drop_indicator.hide()
+        e.acceptProposedAction()
+        self.task_dropped.emit(task_id, self.phase.id, index)
 
 
 # ---------------------------------------------------------------------------
@@ -576,13 +745,17 @@ class KanbanWindow(QMainWindow):
                 (t for t in trees if t.project.id == self._project_id), None
             )
             if proj_tree:
-                for pwt in proj_tree.phases:
-                    col = PhaseColumn(self.db, pwt.phase, pwt.tasks)
+                for idx, pwt in enumerate(proj_tree.phases):
+                    sorted_tasks = sorted(
+                        pwt.tasks,
+                        key=lambda t: (t.status == "done", t.order_index, t.id),
+                    )
+                    col = PhaseColumn(self.db, pwt.phase, sorted_tasks, index=idx)
                     col.task_added.connect(self._on_task_added)
                     col.task_deleted.connect(self._on_task_deleted)
                     col.task_status_changed.connect(self._on_task_status_changed)
-                    col.task_move_up.connect(self._on_task_move_up)
-                    col.task_move_down.connect(self._on_task_move_down)
+                    col.task_dropped.connect(self._on_task_dropped)
+                    col.task_split_requested.connect(self._on_task_split)
                     col.phase_deleted.connect(self._on_phase_deleted)
                     layout.addWidget(col)
 
@@ -631,52 +804,47 @@ class KanbanWindow(QMainWindow):
             self.db.update_task(task_id, order_index=max_order + 1)
         self._schedule_reload()
 
-    def _on_task_move_up(self, task_id: int) -> None:
-        task = self.db.get_task(task_id)
-        siblings = self.db.list_tasks(task.phase_id)
-        idx = next((i for i, t in enumerate(siblings) if t.id == task_id), -1)
-        if idx < 0:
-            return
-        if idx > 0:
-            other = siblings[idx - 1]
-            a, b = siblings[idx].order_index, other.order_index
-            self.db.update_task(other.id, order_index=a)
-            self.db.update_task(task_id, order_index=b)
-        else:
-            # フェーズ間移動：前のフェーズの末尾へ
-            phase = self.db.get_phase(task.phase_id)
-            phases = self.db.list_phases(phase.project_id)
-            p_idx = next((i for i, p in enumerate(phases) if p.id == phase.id), -1)
-            if p_idx <= 0:
-                return
-            target = phases[p_idx - 1]
-            target_tasks = self.db.list_tasks(target.id)
-            new_order = (max((t.order_index for t in target_tasks), default=-1)) + 1
-            self.db.update_task(task_id, phase_id=target.id, order_index=new_order)
+    def _on_task_dropped(self, task_id: int, target_phase_id: int, insert_index: int) -> None:
+        # 表示順（未完了→完了）に揃えてから order_index を振り直す
+        target_tasks = [t for t in self.db.list_tasks(target_phase_id) if t.id != task_id]
+        target_tasks.sort(key=lambda t: (t.status == "done", t.order_index, t.id))
+        insert_index = max(0, min(insert_index, len(target_tasks)))
+        # 移動先の order_index を 0..N で振り直す
+        for i, t in enumerate(target_tasks):
+            new_order = i if i < insert_index else i + 1
+            if t.order_index != new_order:
+                self.db.update_task(t.id, order_index=new_order)
+        self.db.update_task(task_id, phase_id=target_phase_id, order_index=insert_index)
         self._schedule_reload()
 
-    def _on_task_move_down(self, task_id: int) -> None:
-        task = self.db.get_task(task_id)
-        siblings = self.db.list_tasks(task.phase_id)
-        idx = next((i for i, t in enumerate(siblings) if t.id == task_id), -1)
-        if idx < 0:
+    def _on_task_split(self, task_id: int) -> None:
+        parent = self.db.get_task(task_id)
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "タスクを分解",
+            f"「{parent.name}」を細かいタスクに分解\n（1行 = 1タスク）",
+            "",
+        )
+        if not ok:
             return
-        if idx < len(siblings) - 1:
-            other = siblings[idx + 1]
-            a, b = siblings[idx].order_index, other.order_index
-            self.db.update_task(other.id, order_index=a)
-            self.db.update_task(task_id, order_index=b)
-        else:
-            # フェーズ間移動：次のフェーズの先頭へ
-            phase = self.db.get_phase(task.phase_id)
-            phases = self.db.list_phases(phase.project_id)
-            p_idx = next((i for i, p in enumerate(phases) if p.id == phase.id), -1)
-            if p_idx < 0 or p_idx >= len(phases) - 1:
-                return
-            target = phases[p_idx + 1]
-            target_tasks = self.db.list_tasks(target.id)
-            min_order = min((t.order_index for t in target_tasks), default=0)
-            self.db.update_task(task_id, phase_id=target.id, order_index=min_order - 1)
+        names = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not names:
+            return
+
+        # 親の位置に新タスクをN個入れて、親は消す
+        siblings = self.db.list_tasks(parent.phase_id)
+        n = len(names)
+        # 親より後ろのタスクを (N-1) ずらす（親1個ぶんは新タスクが埋める）
+        for s in siblings:
+            if s.id != parent.id and s.order_index > parent.order_index:
+                self.db.update_task(s.id, order_index=s.order_index + n - 1)
+        for i, name in enumerate(names):
+            self.db.create_task(Task(
+                phase_id=parent.phase_id,
+                name=name,
+                order_index=parent.order_index + i,
+            ))
+        self.db.delete_task(parent.id)
         self._schedule_reload()
 
     def _on_phase_deleted(self, phase_id: int) -> None:

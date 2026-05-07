@@ -262,6 +262,13 @@ class Database:
         ).fetchall()
         return [_row_time_log(r) for r in rows]
 
+    def total_seconds_for_task(self, task_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(duration_sec), 0) AS s FROM time_logs WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        return int(row["s"] or 0)
+
     def total_seconds_for_phase(self, phase_id: int) -> int:
         row = self.conn.execute(
             """

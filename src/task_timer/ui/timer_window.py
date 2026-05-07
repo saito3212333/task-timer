@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
@@ -30,6 +30,32 @@ PHASE_COLORS = [
 ]
 
 
+_BTN_DONE_STYLE = """
+    QPushButton {
+        background: #f1f5f9;
+        color: #1e293b;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        font-size: 12px;
+    }
+    QPushButton:hover { background: #e2e8f0; }
+    QPushButton:disabled { color: #94a3b8; background: #f8fafc; }
+"""
+
+_BTN_SUBTLE_STYLE = """
+    QPushButton {
+        background: transparent;
+        color: #64748b;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        padding: 2px 10px;
+        font-size: 11px;
+    }
+    QPushButton:hover { color: #1e293b; border-color: #94a3b8; }
+    QPushButton:checked { background: #e2e8f0; color: #1e293b; border-color: #94a3b8; }
+"""
+
+
 class TimerWindow(QMainWindow):
     def __init__(self, db: Database) -> None:
         super().__init__()
@@ -44,13 +70,13 @@ class TimerWindow(QMainWindow):
         self._tick_timer.setInterval(1000)
         self._tick_timer.timeout.connect(self._on_tick)
 
-        # 累計表示の状態
+        # 累計パネル状態
         self._show_totals: bool = False
         self._total_unit_hours: bool = True  # True=時間, False=人工(8h/日)
 
         self.setWindowTitle("task-timer")
-        self.setFixedSize(380, 560)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setFixedWidth(380)
+        self.setMinimumHeight(540)
 
         self._build_ui()
         self._load_projects()
@@ -89,7 +115,7 @@ class TimerWindow(QMainWindow):
         self._lbl_status.setStyleSheet("color: gray; font-size: 13px;")
         layout.addWidget(self._lbl_status)
 
-        # コントロールボタン
+        # コントロールボタン（スタート / ストップ）
         btn_row = QHBoxLayout()
         self._btn_start = QPushButton("▶  スタート")
         self._btn_stop  = QPushButton("⏹  ストップ")
@@ -102,45 +128,63 @@ class TimerWindow(QMainWindow):
         btn_row.addWidget(self._btn_stop)
         layout.addLayout(btn_row)
 
-        # 累計表示トグル + 単位切替
-        totals_btn_row = QHBoxLayout()
-        self._btn_toggle_totals = QPushButton("📊 累計を表示")
-        self._btn_toggle_totals.setCheckable(True)
-        self._btn_toggle_totals.setFixedHeight(28)
-        self._btn_toggle_totals.toggled.connect(self._on_toggle_totals)
-        self._btn_toggle_unit = QPushButton("人工で表示")
-        self._btn_toggle_unit.setCheckable(True)
-        self._btn_toggle_unit.setFixedHeight(28)
-        self._btn_toggle_unit.toggled.connect(self._on_toggle_unit)
-        totals_btn_row.addWidget(self._btn_toggle_totals)
-        totals_btn_row.addWidget(self._btn_toggle_unit)
-        layout.addLayout(totals_btn_row)
+        layout.addSpacing(8)
 
-        # 累計パネル（折りたたみ可）
+        # タスク完了ボタン（中央に細め）
+        done_row = QHBoxLayout()
+        done_row.addStretch()
+        self._btn_done = QPushButton("✓  完了")
+        self._btn_done.setFixedSize(140, 32)
+        self._btn_done.setStyleSheet(_BTN_DONE_STYLE)
+        self._btn_done.clicked.connect(self._on_complete_task)
+        done_row.addWidget(self._btn_done)
+        done_row.addStretch()
+        layout.addLayout(done_row)
+
+        layout.addSpacing(20)
+
+        # 下段：管理画面 / 累計トグル（薄く・小さく）
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(20)
+        bottom_row.addStretch()
+        self._btn_manager = QPushButton("管理画面")
+        self._btn_manager.setFixedHeight(26)
+        self._btn_manager.setStyleSheet(_BTN_SUBTLE_STYLE)
+        self._btn_manager.clicked.connect(self._open_manager)
+        bottom_row.addWidget(self._btn_manager)
+
+        self._btn_toggle_totals = QPushButton("累計")
+        self._btn_toggle_totals.setCheckable(True)
+        self._btn_toggle_totals.setFixedHeight(26)
+        self._btn_toggle_totals.setStyleSheet(_BTN_SUBTLE_STYLE)
+        self._btn_toggle_totals.toggled.connect(self._on_toggle_totals)
+        bottom_row.addWidget(self._btn_toggle_totals)
+        bottom_row.addStretch()
+        layout.addLayout(bottom_row)
+
+        # 累計パネル（折りたたみ）
         self._totals_panel = QWidget()
         tp = QVBoxLayout(self._totals_panel)
-        tp.setContentsMargins(0, 0, 0, 0)
-        tp.setSpacing(2)
-        self._lbl_total_proj  = QLabel("プロジェクト: -")
-        self._lbl_total_phase = QLabel("フェーズ: -")
-        for lbl in (self._lbl_total_proj, self._lbl_total_phase):
-            lbl.setStyleSheet("color: gray; font-size: 12px;")
-            lbl.setAlignment(Qt.AlignCenter)
-            tp.addWidget(lbl)
+        tp.setContentsMargins(0, 8, 0, 0)
+        tp.setSpacing(6)
+        self._lbl_totals = QLabel("—")
+        self._lbl_totals.setAlignment(Qt.AlignCenter)
+        self._lbl_totals.setStyleSheet("color: #475569; font-size: 12px;")
+        tp.addWidget(self._lbl_totals)
+
+        unit_row = QHBoxLayout()
+        unit_row.addStretch()
+        self._btn_toggle_unit = QPushButton("人工で表示")
+        self._btn_toggle_unit.setCheckable(True)
+        self._btn_toggle_unit.setFixedHeight(22)
+        self._btn_toggle_unit.setStyleSheet(_BTN_SUBTLE_STYLE)
+        self._btn_toggle_unit.toggled.connect(self._on_toggle_unit)
+        unit_row.addWidget(self._btn_toggle_unit)
+        unit_row.addStretch()
+        tp.addLayout(unit_row)
+
         self._totals_panel.setVisible(False)
         layout.addWidget(self._totals_panel)
-
-        # タスク完了ボタン
-        self._btn_done = QPushButton("✓  このタスクを完了")
-        self._btn_done.setFixedHeight(36)
-        self._btn_done.clicked.connect(self._on_complete_task)
-        layout.addWidget(self._btn_done)
-
-        # 管理画面ボタン
-        self._btn_manager = QPushButton("管理画面を開く")
-        self._btn_manager.setFixedHeight(36)
-        self._btn_manager.clicked.connect(self._open_manager)
-        layout.addWidget(self._btn_manager)
 
     # ──────────────────────────────── データ読み込み
 
@@ -152,15 +196,39 @@ class TimerWindow(QMainWindow):
         self._cmb_project.blockSignals(False)
         self._on_project_changed()
 
+    def _refresh_from_db(self) -> None:
+        """管理画面から戻ってきたとき、選択を保ったままDBを読み直す。"""
+        if self._running:
+            return
+        cur_proj_id = self._cmb_project.currentData()
+        cur_task_id = self._current_task_id()
+
+        self._cmb_project.blockSignals(True)
+        self._cmb_project.clear()
+        for p in self.db.list_projects():
+            self._cmb_project.addItem(p.name, userData=p.id)
+        idx = self._cmb_project.findData(cur_proj_id) if cur_proj_id is not None else -1
+        if idx >= 0:
+            self._cmb_project.setCurrentIndex(idx)
+        self._cmb_project.blockSignals(False)
+
+        self._reload_tasks(self._cmb_project.currentData(), preferred_task_id=cur_task_id)
+
+    def event(self, ev) -> bool:
+        if ev.type() == QEvent.WindowActivate:
+            self._refresh_from_db()
+        return super().event(ev)
+
     def _on_project_changed(self) -> None:
         project_id = self._cmb_project.currentData()
         self._reload_tasks(project_id)
 
-    def _reload_tasks(self, project_id: int | None) -> None:
+    def _reload_tasks(self, project_id: int | None, preferred_task_id: int | None = None) -> None:
         """タスクドロップダウンをフェーズごとにグループ化して構築する。"""
         self._cmb_task.blockSignals(True)
         model = QStandardItemModel(self._cmb_task)
         first_task_row: int | None = None
+        preferred_row: int | None = None
 
         if project_id is not None:
             phases = self.db.list_phases(project_id)
@@ -187,16 +255,32 @@ class TimerWindow(QMainWindow):
                     item.setData(t.id, Qt.UserRole)
                     item.setForeground(QBrush(color))
                     model.appendRow(item)
+                    row = model.rowCount() - 1
                     if first_task_row is None:
-                        first_task_row = model.rowCount() - 1
+                        first_task_row = row
+                    if preferred_task_id is not None and t.id == preferred_task_id:
+                        preferred_row = row
 
         self._cmb_task.setModel(model)
-        if first_task_row is not None:
-            self._cmb_task.setCurrentIndex(first_task_row)
-        else:
-            self._cmb_task.setCurrentIndex(-1)
+        target = preferred_row if preferred_row is not None else first_task_row
+        self._cmb_task.setCurrentIndex(target if target is not None else -1)
         self._cmb_task.blockSignals(False)
         self._update_start_button()
+
+    def _find_next_task_id(self) -> int | None:
+        """現在の選択より下にある最初のタスクID（次へ進む先）。なければNone。"""
+        model = self._cmb_task.model()
+        if not isinstance(model, QStandardItemModel):
+            return None
+        cur = self._cmb_task.currentIndex()
+        for row in range(cur + 1, model.rowCount()):
+            item = model.item(row)
+            if item is None:
+                continue
+            data = item.data(Qt.UserRole)
+            if isinstance(data, int):
+                return data
+        return None
 
     def _current_task_id(self) -> int | None:
         idx = self._cmb_task.currentIndex()
@@ -276,12 +360,10 @@ class TimerWindow(QMainWindow):
     def _on_toggle_totals(self, checked: bool) -> None:
         self._show_totals = checked
         self._totals_panel.setVisible(checked)
-        self._btn_toggle_totals.setText("📊 累計を隠す" if checked else "📊 累計を表示")
         if checked:
             self._refresh_totals()
 
     def _on_toggle_unit(self, checked: bool) -> None:
-        # checked=人工モード、未チェック=時間モード
         self._total_unit_hours = not checked
         self._btn_toggle_unit.setText("時間で表示" if checked else "人工で表示")
         self._refresh_totals()
@@ -291,22 +373,24 @@ class TimerWindow(QMainWindow):
             return
         task_id = self._current_task_id()
         if task_id is None:
-            self._lbl_total_proj.setText("プロジェクト: -")
-            self._lbl_total_phase.setText("フェーズ: -")
+            self._lbl_totals.setText("—")
             return
         task = self.db.get_task(task_id)
         phase = self.db.get_phase(task.phase_id)
-        proj_sec  = self.db.total_seconds_for_project(phase.project_id)
+        task_sec  = self.db.total_seconds_for_task(task_id)
         phase_sec = self.db.total_seconds_for_phase(task.phase_id)
-        self._lbl_total_proj.setText(f"プロジェクト: {self._fmt_total(proj_sec)}")
-        self._lbl_total_phase.setText(f"フェーズ: {self._fmt_total(phase_sec)}")
+        proj_sec  = self.db.total_seconds_for_project(phase.project_id)
+        self._lbl_totals.setText(
+            f"タスク {self._fmt_total(task_sec)}　"
+            f"フェーズ {self._fmt_total(phase_sec)}　"
+            f"プロジェクト {self._fmt_total(proj_sec)}"
+        )
 
     def _fmt_total(self, sec: int) -> str:
         if self._total_unit_hours:
             h, rem = divmod(sec, 3600)
             m, _ = divmod(rem, 60)
-            return f"{h}h {m:02d}m"
-        # 1人工 = 8時間
+            return f"{h}h{m:02d}m"
         days = sec / 3600 / 8
         return f"{days:.2f}人工"
 
@@ -319,22 +403,16 @@ class TimerWindow(QMainWindow):
         if task_id is None:
             return
         task = self.db.get_task(task_id)
-        reply = QMessageBox.question(
-            self,
-            "タスクを完了",
-            f"「{task.name}」を完了にしますか？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if reply != QMessageBox.Yes:
-            return
+
+        # 次に選択するタスク（リロード前に決める）
+        next_id = self._find_next_task_id()
 
         self.db.update_task(task_id, status="done")
         self._lbl_status.setText(f"完了：{task.name}")
         self._lbl_status.setStyleSheet("color: gray; font-size: 13px;")
 
-        # ドロップダウンから除外（再構築）
-        self._reload_tasks(self._cmb_project.currentData())
+        # ドロップダウンから除外 → 次のタスクを自動選択
+        self._reload_tasks(self._cmb_project.currentData(), preferred_task_id=next_id)
         self._refresh_totals()
 
         # カンバンが開いていれば自動更新
