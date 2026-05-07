@@ -3,7 +3,7 @@
 このドキュメントは、これまでのClaudeとの設計議論で確定した内容をまとめたもの。
 **次回セッションで Claude が読めば、要件定義からやり直さずに開発を再開できる**ことを目的とする。
 
-最終更新：2026-05-07（UX磨き込み一巡）
+最終更新：2026-05-08（uiレイヤをモジュール分割＋見積もりMVP）
 
 ---
 
@@ -166,15 +166,19 @@ tools/task_timer/
     │   ├── __init__.py        # Database, connect, default_db_path を re-export
     │   ├── schema.py          # DDL
     │   ├── connection.py      # path解決 + 接続初期化（FK ON, WAL）
-    │   └── repository.py      # Database クラス（CRUD + load_project_tree）
-    ├── ui/
-    │   ├── __init__.py
-    │   ├── (timer_window.py)  # 未実装
-    │   ├── (manager_window.py)# 未実装
-    │   └── widgets/
-    │       └── __init__.py
-    └── services/
-        └── __init__.py        # 未実装
+    │   └── repository.py      # Database クラス（CRUD + 集計 + 中央値）
+    └── ui/
+        ├── __init__.py
+        ├── theme.py           # 色パレット＋共通スタイル文字列（唯一の真実）
+        ├── format_helpers.py  # Tシャツ丸め・見積/実績フォーマット・色判定
+        ├── timer_window.py    # TimerWindow（小窓・常駐）
+        ├── kanban_window.py   # KanbanWindow（ボード本体）
+        └── widgets/
+            ├── __init__.py    # 公開クラスを re-export
+            ├── deadline.py    # WeekendCalendar / DeadlinePicker / DeadlineBadge
+            ├── estimate.py    # EstimateBadge
+            ├── task_card.py   # TaskCard
+            └── phase_column.py # PhaseColumn
 ```
 
 ---
@@ -283,14 +287,44 @@ uv run task-timer
 | ~~Q~~ | ~~**フォーカス復帰時の再読込**~~ | ✅ `event(WindowActivate)` で選択を保ったままDB再取得（計測中はスキップ） |
 | ~~R~~ | ~~**フェーズ内ソート（未完了を上）**~~ | ✅ `_reload_board` と `_on_task_dropped` で `(status==done, order_index, id)` でソート |
 
-### 🟡 あると嬉しい（v0.1+）
+### 🟡 v0.1+（2026-05-07 実装）
 
-| # | 機能 | 対象ファイル | 概要 |
-|---|---|---|---|
-| 4 | **フェーズ名編集** | kanban_window.py | ヘッダーをダブルクリックで名前変更 |
-| 6 | **優先度表示** | kanban_window.py | カードに🔴🟡⚪ アイコン。クリックで循環 |
-| 7 | **ボトムアップ集計** | kanban_window.py | フェーズヘッダーに「完了n/全n件」バッジ表示 |
-| 8 | **完了タスクの折りたたみ** | kanban_window.py | 「完了済みを隠す」トグルボタン（5/Rで部分対応） |
+| # | 機能 | 状態 |
+|---|---|---|
+| ~~4~~ | ~~**フェーズ名編集**~~ | ✅ ヘッダー（QLineEdit化）をダブルクリック → 青枠で編集 → Enter/フォーカスアウトで保存 |
+| 6 | ~~**優先度表示**~~ | ⛔ 見送り（シンプルさ優先 / 2026-05-07判断） |
+| ~~7~~ | ~~**ボトムアップ集計**~~ | ✅ フェーズヘッダーにタイトル右へ `done/total` を薄字小さく。`_hide_done` でも全体カウント |
+| ~~8~~ | ~~**完了タスクの折りたたみ**~~ | ✅ トップバー右端 `完了を隠す` QCheckBox。ON で `_reload_board` がdoneを除外 |
+
+### 🔵 自動見積もり MVP（2026-05-08）
+
+| # | 機能 | 概要 |
+|---|---|---|
+| ~~Y~~ | ~~**median自動見積もり**~~ | ✅ `Database.median_actual_seconds_for_project` 追加。タスク作成時に同プロジェクト完了タスクの実績中央値→Tシャツ丸めで `planned_hours` を自動セット。0件のときはNone |
+| ~~Z~~ | ~~**EstimateBadge**~~ | ✅ 未完了は `~1h`（薄字）、完了は `1h → 1h32m`（早い=GREEN／近い=MUTED／遅い=ORANGE）。タイマー画面のタイマー下にも `見積 ~1h` |
+
+### 🧹 リファクタリング（2026-05-08）
+
+| 内容 | 概要 |
+|---|---|
+| 死コード削除 | `ui/manager_window.py`（旧Tree UI、未参照）と `services/` を削除 |
+| `theme.py` 新設 | 色（5色＋背景）と共通スタイル（BTN_STYLE / BTN_DANGER / BTN_START_STYLE / BTN_STOP_STYLE / LINK_STYLE）を集約 |
+| `format_helpers.py` 新設 | Tシャツ丸め・fmt_planned/fmt_actual・estimate_color を独立モジュール化 |
+| `widgets/` 分割 | deadline / estimate / task_card / phase_column の4ファイルに分離 |
+| `kanban_window.py` 圧縮 | 1089行 → 318行（KanbanWindowクラスのみ） |
+| `timer_window.py` 整理 | ローカル色定数・ボタンスタイルを撤廃して `theme` と `format_helpers` から import |
+| 機能 | **完全保持**（見た目・挙動の差分ゼロ） |
+
+### 🟢 タイマー画面UI簡素化（2026-05-07）
+
+| # | 機能 | 概要 |
+|---|---|---|
+| ~~S~~ | ~~**スタート/ストップ統合**~~ | ✅ `_btn_play` 1ボタン化。ラベル `▶ スタート`⇄`⏹ ストップ`、色 BLUE⇄RED |
+| ~~T~~ | ~~**状態ラベル削除**~~ | ✅ `_lbl_status` 撤去。タイマー文字色（停止=MUTED / 計測中=GREEN）で表現 |
+| ~~U~~ | ~~**完了をテキストリンク化**~~ | ✅ 枠付き`✓ 完了` → 薄字 `✓ このタスクを完了` （`_LINK_STYLE`） |
+| ~~V~~ | ~~**下段リンクをドット区切りに**~~ | ✅ `管理画面 · 累計` を中央寄せフラットボタン＋ `·` QLabel |
+| ~~W~~ | ~~**保存/完了フィードバックをタイマー位置で**~~ | ✅ ストップ後 `✓ 1h23m` を1.8秒、完了後 `✓ 完了` を1.2秒だけGREENで上書き → 自動でグレーに戻る |
+| ~~X~~ | ~~**色パレットを5色に統一**~~ | ✅ TEXT/MUTED/BLUE/RED/GREEN のみ。kanban側の `ACCENT/DANGER` と整合 |
 
 ### ⚪ v0.2以降
 
