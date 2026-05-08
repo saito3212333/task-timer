@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterator
 
 from task_timer.models import (
@@ -53,6 +53,7 @@ def _row_phase(r: sqlite3.Row) -> Phase:
         order_index=r["order_index"],
         deadline=_to_date(r["deadline"]),  # phase deadline is required
         planned_hours=r["planned_hours"],
+        is_routine=bool(r["is_routine"]),
         created_at=_to_dt(r["created_at"]),
         updated_at=_to_dt(r["updated_at"]),
     )
@@ -68,6 +69,7 @@ def _row_task(r: sqlite3.Row) -> Task:
         priority=r["priority"],
         deadline=_to_date(r["deadline"]),
         planned_hours=r["planned_hours"],
+        recurrence=r["recurrence"],
         created_at=_to_dt(r["created_at"]),
         updated_at=_to_dt(r["updated_at"]),
     )
@@ -90,6 +92,8 @@ class Database:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
+        # システム必須エンティティのIDキャッシュ（init_default_setup で埋まる）
+        self.system_ids: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # transaction helper
@@ -152,8 +156,8 @@ class Database:
         with self.tx() as c:
             cur = c.execute(
                 """
-                INSERT INTO phases(project_id, name, status, order_index, deadline, planned_hours)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO phases(project_id, name, status, order_index, deadline, planned_hours, is_routine)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     phase.project_id,
@@ -162,6 +166,7 @@ class Database:
                     phase.order_index,
                     _date_str(phase.deadline),
                     phase.planned_hours,
+                    1 if phase.is_routine else 0,
                 ),
             )
         return self.get_phase(cur.lastrowid)  # type: ignore[arg-type]
@@ -195,8 +200,8 @@ class Database:
         with self.tx() as c:
             cur = c.execute(
                 """
-                INSERT INTO tasks(phase_id, name, status, order_index, priority, deadline, planned_hours)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks(phase_id, name, status, order_index, priority, deadline, planned_hours, recurrence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.phase_id,
@@ -206,6 +211,7 @@ class Database:
                     task.priority,
                     _date_str(task.deadline),
                     task.planned_hours,
+                    task.recurrence,
                 ),
             )
         return self.get_task(cur.lastrowid)  # type: ignore[arg-type]
@@ -231,6 +237,33 @@ class Database:
     def delete_task(self, task_id: int) -> None:
         with self.tx() as c:
             c.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    def complete_task(self, task_id: int) -> Task | None:
+        """status='done'にしてフェーズ末尾に下げる。
+        recurrence設定済みなら同位置に active クローンを作って返す。"""
+        task = self.get_task(task_id)
+        new_clone: Task | None = None
+        if task.recurrence in ("daily", "weekly"):
+            new_deadline = task.deadline
+            if new_deadline is not None:
+                delta = 1 if task.recurrence == "daily" else 7
+                new_deadline = new_deadline + timedelta(days=delta)
+            new_clone = self.create_task(Task(
+                phase_id=task.phase_id,
+                name=task.name,
+                status="active",
+                order_index=task.order_index,
+                priority=task.priority,
+                deadline=new_deadline,
+                planned_hours=task.planned_hours,
+                recurrence=task.recurrence,
+            ))
+        siblings = self.list_tasks(task.phase_id)
+        max_order = max(
+            (t.order_index for t in siblings if t.id != task_id), default=-1
+        )
+        self.update_task(task_id, status="done", order_index=max_order + 1)
+        return new_clone
 
     # ------------------------------------------------------------------
     # time logs
@@ -261,6 +294,44 @@ class Database:
             (task_id,),
         ).fetchall()
         return [_row_time_log(r) for r in rows]
+
+    def update_time_log(self, log_id: int, **fields: Any) -> TimeLog:
+        if not fields:
+            raise ValueError("update_time_log called with no fields")
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        params = (*fields.values(), log_id)
+        with self.tx() as c:
+            cur = c.execute(
+                f"UPDATE time_logs SET {cols} WHERE id = ?", params
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"time_log {log_id} not found")
+        row = self.conn.execute(
+            "SELECT * FROM time_logs WHERE id = ?", (log_id,)
+        ).fetchone()
+        return _row_time_log(row)
+
+    def list_notes_for_task(self, task_id: int) -> list[TimeLog]:
+        """note が入っているログだけを新しい順で返す。"""
+        rows = self.conn.execute(
+            """
+            SELECT * FROM time_logs
+            WHERE task_id = ? AND note IS NOT NULL AND TRIM(note) != ''
+            ORDER BY started_at DESC
+            """,
+            (task_id,),
+        ).fetchall()
+        return [_row_time_log(r) for r in rows]
+
+    def count_notes_for_task(self, task_id: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM time_logs
+            WHERE task_id = ? AND note IS NOT NULL AND TRIM(note) != ''
+            """,
+            (task_id,),
+        ).fetchone()
+        return int(row["n"] or 0)
 
     def total_seconds_for_task(self, task_id: int) -> int:
         row = self.conn.execute(
@@ -339,6 +410,67 @@ class Database:
         ]
 
     # ------------------------------------------------------------------
+    # system entities (汎用 project / ルーティン・スポット phase / スケジューリング task)
+    # ------------------------------------------------------------------
+    def init_default_setup(self) -> None:
+        """起動時に呼び出し：「汎用」プロジェクト・標準フェーズ・スケジューリングタスクが
+        無ければ自動生成する。生成されたIDを self.system_ids に保持する。"""
+        proj = next((p for p in self.list_projects() if p.name == "汎用"), None)
+        if proj is None:
+            proj = self.create_project(Project(name="汎用"))
+
+        phases = self.list_phases(proj.id)
+        routine = next((ph for ph in phases if ph.name == "ルーティン"), None)
+        if routine is None:
+            routine = self.create_phase(Phase(
+                project_id=proj.id,
+                name="ルーティン",
+                deadline=date.today(),
+                order_index=0,
+                is_routine=True,
+            ))
+        spot = next((ph for ph in phases if ph.name == "スポット"), None)
+        if spot is None:
+            spot = self.create_phase(Phase(
+                project_id=proj.id,
+                name="スポット",
+                deadline=date.today(),
+                order_index=1,
+                is_routine=False,
+            ))
+
+        sched_task = next(
+            (t for t in self.list_tasks(routine.id) if t.name == "スケジューリング"),
+            None,
+        )
+        if sched_task is None:
+            sched_task = self.create_task(Task(
+                phase_id=routine.id,
+                name="スケジューリング",
+                order_index=0,
+                recurrence=None,
+            ))
+
+        self.system_ids = {
+            "general_project_id": proj.id,
+            "routine_phase_id": routine.id,
+            "spot_phase_id": spot.id,
+            "scheduling_task_id": sched_task.id,
+        }
+
+    def is_system_project(self, project_id: int) -> bool:
+        return self.system_ids.get("general_project_id") == project_id
+
+    def is_system_phase(self, phase_id: int) -> bool:
+        return phase_id in (
+            self.system_ids.get("routine_phase_id"),
+            self.system_ids.get("spot_phase_id"),
+        )
+
+    def is_system_task(self, task_id: int) -> bool:
+        return self.system_ids.get("scheduling_task_id") == task_id
+
+    # ------------------------------------------------------------------
     # generic patch helper
     # ------------------------------------------------------------------
     def _patch(self, table: str, row_id: int, fields: dict[str, Any], row_fn):
@@ -347,7 +479,9 @@ class Database:
 
         normalized: dict[str, Any] = {}
         for k, v in fields.items():
-            if isinstance(v, date) and not isinstance(v, datetime):
+            if isinstance(v, bool):
+                normalized[k] = 1 if v else 0
+            elif isinstance(v, date) and not isinstance(v, datetime):
                 normalized[k] = _date_str(v)
             elif isinstance(v, datetime):
                 normalized[k] = _dt_str(v)

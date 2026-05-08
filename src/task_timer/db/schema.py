@@ -3,7 +3,7 @@
 All timestamps stored as ISO-8601 strings (TEXT). Dates as YYYY-MM-DD.
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL_STATEMENTS: list[str] = [
     """
@@ -29,6 +29,7 @@ DDL_STATEMENTS: list[str] = [
         order_index     INTEGER NOT NULL DEFAULT 0,
         deadline        TEXT    NOT NULL,
         planned_hours   REAL,
+        is_routine      INTEGER NOT NULL DEFAULT 0,
         created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
         updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
     )
@@ -45,6 +46,8 @@ DDL_STATEMENTS: list[str] = [
                                 CHECK (priority IN ('high','normal','low')),
         deadline        TEXT,
         planned_hours   REAL,
+        recurrence      TEXT
+                                CHECK (recurrence IS NULL OR recurrence IN ('daily','weekly')),
         created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
         updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
     )

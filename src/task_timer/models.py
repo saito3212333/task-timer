@@ -6,6 +6,7 @@ from typing import Literal
 
 Status = Literal["active", "done", "archived"]
 Priority = Literal["high", "normal", "low"]
+Recurrence = Literal["daily", "weekly"]
 
 
 @dataclass(slots=True)
@@ -29,6 +30,7 @@ class Phase:
     status: Status = "active"
     order_index: int = 0
     planned_hours: float | None = None
+    is_routine: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -43,6 +45,7 @@ class Task:
     priority: Priority = "normal"
     deadline: date | None = None
     planned_hours: float | None = None
+    recurrence: Recurrence | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

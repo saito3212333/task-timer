@@ -3,7 +3,7 @@
 このドキュメントは、これまでのClaudeとの設計議論で確定した内容をまとめたもの。
 **次回セッションで Claude が読めば、要件定義からやり直さずに開発を再開できる**ことを目的とする。
 
-最終更新：2026-05-08（uiレイヤをモジュール分割＋見積もりMVP）
+最終更新：2026-05-09（メモ機能＋ルーティンフェーズ＋集中モード＋汎用プロジェクト自動セットアップ）
 
 ---
 
@@ -176,10 +176,15 @@ tools/task_timer/
         └── widgets/
             ├── __init__.py    # 公開クラスを re-export
             ├── deadline.py    # WeekendCalendar / DeadlinePicker / DeadlineBadge
-            ├── estimate.py    # EstimateBadge
+            ├── estimate.py    # EstimateBadge（カードからは外したが見積バッジロジックは残置）
             ├── task_card.py   # TaskCard
-            └── phase_column.py # PhaseColumn
+            ├── phase_column.py # PhaseColumn
+            ├── memo.py        # MemoBadge / MemoHistoryDialog
+            └── totals_dialog.py # TotalsDialog（累計時間ポップアップ）
 ```
+
+別配置：
+- `~/Applications/TaskTimer.app/` — macOS用 .app bundle（アイコン付き、Spotlightから起動可）
 
 ---
 
@@ -326,6 +331,52 @@ uv run task-timer
 | ~~W~~ | ~~**保存/完了フィードバックをタイマー位置で**~~ | ✅ ストップ後 `✓ 1h23m` を1.8秒、完了後 `✓ 完了` を1.2秒だけGREENで上書き → 自動でグレーに戻る |
 | ~~X~~ | ~~**色パレットを5色に統一**~~ | ✅ TEXT/MUTED/BLUE/RED/GREEN のみ。kanban側の `ACCENT/DANGER` と整合 |
 
+### 📝 メモ機能（2026-05-09）
+
+| # | 機能 | 概要 |
+|---|---|---|
+| ~~AA~~ | ~~**ストップ時のメモ入力**~~ | ✅ ⏹後に `_memo_edit` を表示。Enterで `time_logs.note` に保存、Escでスキップ。次の▶でも残ってたら自動で閉じる |
+| ~~AB~~ | ~~**メモ件数バッジ**~~ | ✅ TaskCardに `📝N`（noteあり件数）。0件なら非表示。クリックで履歴ダイアログ |
+| ~~AC~~ | ~~**メモ履歴ダイアログ**~~ | ✅ 日時・作業時間・本文を縦に並べる。新しい順 |
+| Repo | `update_time_log` / `list_notes_for_task` / `count_notes_for_task` 追加 |
+
+### 🔁 ルーティンフェーズ（2026-05-09）— 体験は「いまいち」のため再考予定
+
+| # | 機能 | 概要 |
+|---|---|---|
+| ~~BA~~ | ~~**スキーマ拡張**~~ | ✅ `phases.is_routine` ＋ `tasks.recurrence` (`daily`/`weekly`/NULL)。既存DBはALTERで自動マイグレーション。SCHEMA_VERSION 2 |
+| ~~BB~~ | ~~**フェーズ追加ダイアログ**~~ | ✅ `_PhaseAddDialog`：名前 + ルーティンチェック。チェックONなら `is_routine=True` |
+| ~~BC~~ | ~~**🔁バッジ**~~ | ✅ PhaseColumnヘッダーに🔁、TaskCardの名前左にも🔁（recurrence設定済み時） |
+| ~~BD~~ | ~~**右クリックで繰り返し変更**~~ | ✅ ルーティンフェーズ内のみ「繰り返し ▸ なし／毎日／毎週」サブメニュー |
+| ~~BE~~ | ~~**✓でクローン作成**~~ | ✅ `Database.complete_task` 共通化：done時にrecurrence設定済みなら同位置にactiveクローン作成、締切は+1日/+7日。タイマー画面の「✓ 完了」でも同じ |
+
+### 🛠 デフォルト「汎用」プロジェクト＋スケジューリング自動計測（2026-05-09）
+
+| # | 機能 | 概要 |
+|---|---|---|
+| ~~CA~~ | ~~**自動セットアップ**~~ | ✅ `Database.init_default_setup`：起動時に「汎用」プロジェクト＋「ルーティン」(is_routine)＋「スポット」フェーズ＋「スケジューリング」タスク (recurrence=None) を生成。既存ならスキップ。`system_ids` dict に各IDをキャッシュ |
+| ~~CB~~ | ~~**スケジューリング時間記録**~~ | ✅ `KanbanWindow.__init__` で `_opened_at` を保存、`closeEvent` で経過時間を `time_logs` に保存（5秒未満は無視） |
+| ~~CC~~ | ~~**システムエンティティ保護**~~ | ✅ `is_system_project` / `is_system_phase` / `is_system_task` で判定。汎用プロジェクトの「削除」ボタンは disable、ルーティン/スポット/スケジューリングの×ボタンは非表示、TaskCardの右クリック「分解」「削除」もシステム時はskip |
+
+### 🎨 タイマー画面 UI 仕上げ（2026-05-09）
+
+| # | 機能 | 概要 |
+|---|---|---|
+| ~~DA~~ | ~~**サイズ可変＋デフォは最小**~~ | ✅ `setFixedWidth` 撤去、`setMinimumWidth/Height` のみ。デフォ `resize(280,360)` |
+| ~~DB~~ | ~~**タイマー文字 40pt**~~ | ✅ 48pt → 40pt に縮小 |
+| ~~DC~~ | ~~**スタート/ストップを文字のみ**~~ | ✅ 背景なし・MUTED色で他のテキストと統一。fixed 180×34クリック領域は維持 |
+| ~~DD~~ | ~~**集中モード**~~ | ✅ ▶押すと：上部DDs↔タスク名を `QStackedWidget` で同位置に切替。見積／完了リンク／下段は `QGraphicsOpacityEffect(0)` で見えないが場所は確保 → タスク名・タイマー・ストップ位置が固定 |
+| ~~DE~~ | ~~**累計をポップアップ化**~~ | ✅ 旧 inline `_totals_panel` 撤去。`TotalsDialog` で タスク/フェーズ/プロジェクト × 時間/人工 の表 |
+| ~~DF~~ | ~~**管理画面は現プロジェクトで開く**~~ | ✅ `KanbanWindow(initial_project_id=...)` を `_open_manager` から渡す |
+| ~~DG~~ | ~~**締切バッジを「〆 」に縮小**~~ | ✅ 「+ 締切」→「〆 +」、日付には全部「〆 」prefix。font-size 11 → 10px |
+| ~~DH~~ | ~~**カードからEstimateBadge撤去**~~ | ✅ 窮屈解消（時間情報はタイマー画面/累計で見る） |
+
+### 📦 配布
+
+- macOS用 .app bundle 自作（`~/Applications/TaskTimer.app/`）
+- アイコン：`/Users/sahiyo/Downloads/icon.png` を `iconutil` で .icns 化、Resources/AppIcon.icns
+- 起動：Spotlightで「TaskTimer」と打ってEnter／Dockに常駐可
+
 ### ⚪ v0.2以降
 
 | # | 機能 | 概要 |
@@ -333,6 +384,7 @@ uv run task-timer
 | 9 | テンプレート機能 | YAMLでプロジェクト雛形を読み込み |
 | 10 | 週次レポート | time_logsを集計してプロジェクト別時間を表示 |
 | 11 | Windows動作確認 | uv sync + 起動テスト |
+| 12 | ルーティン体験の再設計 | 別画面に切り出す／「今日のルーティン」だけまとめるビュー／クローン方式の見直し |
 
 ---
 

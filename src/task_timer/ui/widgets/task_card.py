@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMenu,
     QPushButton,
@@ -19,7 +20,7 @@ from task_timer.db import Database
 from task_timer.models import Task
 from task_timer.ui.theme import ACCENT, CARD_BG, MUTED, TEXT
 from task_timer.ui.widgets.deadline import DeadlineBadge, DeadlinePicker
-from task_timer.ui.widgets.estimate import EstimateBadge
+from task_timer.ui.widgets.memo import MemoBadge
 
 
 class TaskCard(QWidget):
@@ -29,10 +30,17 @@ class TaskCard(QWidget):
 
     MIME_TYPE = "application/x-task-timer-task-id"
 
-    def __init__(self, task: Task, db: Database, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        task: Task,
+        db: Database,
+        is_in_routine_phase: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.task = task
         self.db = db
+        self.is_in_routine_phase = is_in_routine_phase
         self._committing = False
         self._drag_start: QPoint | None = None
 
@@ -49,6 +57,14 @@ class TaskCard(QWidget):
         self.check.setChecked(task.status == "done")
         self.check.toggled.connect(self._on_toggle)
 
+        # 繰り返し設定済みなら 🔁
+        self.recurrence_icon = QLabel("🔁")
+        self.recurrence_icon.setStyleSheet(
+            f"color: {MUTED}; background: transparent; font-size: 11px;"
+        )
+        self.recurrence_icon.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self._update_recurrence_icon()
+
         # 読み取り専用 QLineEdit をラベル代わりに使う
         self.name_edit = QLineEdit(task.name)
         self.name_edit.setReadOnly(True)
@@ -63,13 +79,7 @@ class TaskCard(QWidget):
         self.deadline_badge = DeadlineBadge(task.deadline)
         self.deadline_badge.clicked.connect(self._open_deadline_picker)
 
-        is_done = task.status == "done"
-        actual_sec = db.total_seconds_for_task(task.id) if is_done and task.id else 0
-        self.estimate_badge = EstimateBadge(
-            planned_hours=task.planned_hours,
-            actual_sec=actual_sec,
-            is_done=is_done,
-        )
+        self.memo_badge = MemoBadge(db, task.id) if task.id else None
 
         self.btn_del = QPushButton("×")
         self.btn_del.setFixedSize(20, 20)
@@ -78,11 +88,16 @@ class TaskCard(QWidget):
             f"color: {MUTED}; font-size: 14px; background: transparent;"
         )
         self.btn_del.clicked.connect(lambda: self.deleted.emit(task.id))
+        # システムタスク（スケジューリング）は削除させない
+        if task.id is not None and db.is_system_task(task.id):
+            self.btn_del.setVisible(False)
 
         layout.addWidget(self.check)
         layout.addSpacing(8)
+        layout.addWidget(self.recurrence_icon)
         layout.addWidget(self.name_edit, 1)
-        layout.addWidget(self.estimate_badge)
+        if self.memo_badge is not None:
+            layout.addWidget(self.memo_badge)
         layout.addWidget(self.deadline_badge)
         layout.addWidget(self.btn_del)
 
@@ -127,7 +142,7 @@ class TaskCard(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(
             f"""
-            QMenu {{
+            QMenu, QMenu QMenu {{
                 background: white;
                 color: {TEXT};
                 border: 1px solid #cbd5e1;
@@ -143,13 +158,54 @@ class TaskCard(QWidget):
             }}
             """
         )
-        act_split = menu.addAction("分解…")
-        act_del   = menu.addAction("削除")
+
+        is_system = self.task.id is not None and self.db.is_system_task(self.task.id)
+
+        # ルーティンフェーズのみ「繰り返し」サブメニューを出す
+        act_rec_off = act_rec_daily = act_rec_weekly = None
+        if self.is_in_routine_phase and not is_system:
+            sub = menu.addMenu("繰り返し")
+            act_rec_off    = sub.addAction(("● " if self.task.recurrence is None     else "  ") + "なし")
+            act_rec_daily  = sub.addAction(("● " if self.task.recurrence == "daily"  else "  ") + "毎日")
+            act_rec_weekly = sub.addAction(("● " if self.task.recurrence == "weekly" else "  ") + "毎週")
+            menu.addSeparator()
+
+        act_split = act_del = None
+        if not is_system:
+            act_split = menu.addAction("分解…")
+            act_del   = menu.addAction("削除")
+        if menu.isEmpty():
+            return
         chosen = menu.exec(event.globalPos())
+
+        if chosen is None:
+            return
         if chosen is act_split:
             self.split_requested.emit(self.task.id)
         elif chosen is act_del:
             self.deleted.emit(self.task.id)
+        elif chosen is act_rec_off:
+            self._set_recurrence(None)
+        elif chosen is act_rec_daily:
+            self._set_recurrence("daily")
+        elif chosen is act_rec_weekly:
+            self._set_recurrence("weekly")
+
+    def _set_recurrence(self, value: str | None) -> None:
+        if self.task.recurrence == value:
+            return
+        self.db.update_task(self.task.id, recurrence=value)
+        self.task.recurrence = value
+        self._update_recurrence_icon()
+
+    def _update_recurrence_icon(self) -> None:
+        self.recurrence_icon.setVisible(self.task.recurrence is not None)
+        if self.task.recurrence == "weekly":
+            self.recurrence_icon.setToolTip("毎週")
+        elif self.task.recurrence == "daily":
+            self.recurrence_icon.setToolTip("毎日")
+        else:
+            self.recurrence_icon.setToolTip("")
 
     def _start_edit(self) -> None:
         self.name_edit.setReadOnly(False)

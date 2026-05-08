@@ -1,15 +1,18 @@
 """カンバンボード：プロジェクト×フェーズ×タスクの一覧画面。"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -19,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from task_timer.db import Database
-from task_timer.models import Phase, Project, Task
+from task_timer.models import Phase, Project, Task, TimeLog
 from task_timer.ui.format_helpers import round_to_tshirt
 from task_timer.ui.theme import (
     ACCENT,
@@ -33,11 +36,14 @@ from task_timer.ui.widgets.phase_column import PhaseColumn
 
 
 class KanbanWindow(QMainWindow):
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, initial_project_id: int | None = None) -> None:
         super().__init__()
         self.db = db
         self._project_id: int | None = None
+        self._initial_project_id: int | None = initial_project_id
         self._hide_done: bool = False
+        # スケジューリング時間：カンバンを開いている間を計測する
+        self._opened_at: datetime = datetime.now()
 
         self.setWindowTitle("Task Timer — ボード")
         self.resize(960, 620)
@@ -73,10 +79,10 @@ class KanbanWindow(QMainWindow):
         btn_add_proj.clicked.connect(self._add_project)
         tl.addWidget(btn_add_proj)
 
-        btn_del_proj = QPushButton("削除")
-        btn_del_proj.setStyleSheet(BTN_DANGER)
-        btn_del_proj.clicked.connect(self._delete_project)
-        tl.addWidget(btn_del_proj)
+        self._btn_del_proj = QPushButton("削除")
+        self._btn_del_proj.setStyleSheet(BTN_DANGER)
+        self._btn_del_proj.clicked.connect(self._delete_project)
+        tl.addWidget(self._btn_del_proj)
 
         tl.addStretch()
 
@@ -111,12 +117,20 @@ class KanbanWindow(QMainWindow):
         self.project_cmb.clear()
         for p in self.db.list_projects():
             self.project_cmb.addItem(p.name, userData=p.id)
+        # 起動時に呼び出し元から渡された project_id があればそれを選ぶ
+        if self._initial_project_id is not None:
+            idx = self.project_cmb.findData(self._initial_project_id)
+            if idx >= 0:
+                self.project_cmb.setCurrentIndex(idx)
+            self._initial_project_id = None  # 次回 _load_projects で再適用しない
         self.project_cmb.blockSignals(False)
-        self._project_id = self.project_cmb.currentData()
-        self._reload_board()
+        self._on_project_changed()
 
     def _on_project_changed(self) -> None:
         self._project_id = self.project_cmb.currentData()
+        # システムプロジェクトは削除させない
+        is_system = self._project_id is not None and self.db.is_system_project(self._project_id)
+        self._btn_del_proj.setEnabled(not is_system)
         self._reload_board()
 
     def _on_hide_done_toggled(self, checked: bool) -> None:
@@ -201,11 +215,14 @@ class KanbanWindow(QMainWindow):
     def _on_task_added(self, phase_id: int, name: str) -> None:
         existing = self.db.list_tasks(phase_id)
         order = (max((t.order_index for t in existing), default=-1)) + 1
+        phase = self.db.get_phase(phase_id)
+        recurrence = "daily" if phase.is_routine else None
         self.db.create_task(Task(
             phase_id=phase_id,
             name=name,
             order_index=order,
             planned_hours=self._auto_estimate_hours(),
+            recurrence=recurrence,
         ))
         self._schedule_reload()
 
@@ -216,14 +233,9 @@ class KanbanWindow(QMainWindow):
             self._schedule_reload()
 
     def _on_task_status_changed(self, task_id: int, is_done: bool) -> None:
-        # 完了にしたらフェーズの末尾に移動
+        # 完了にしたら：末尾移動＋繰り返しならクローン作成（共通ロジック）
         if is_done:
-            task = self.db.get_task(task_id)
-            siblings = self.db.list_tasks(task.phase_id)
-            max_order = max(
-                (t.order_index for t in siblings if t.id != task_id), default=-1
-            )
-            self.db.update_task(task_id, order_index=max_order + 1)
+            self.db.complete_task(task_id)
         self._schedule_reload()
 
     def _on_task_dropped(self, task_id: int, target_phase_id: int, insert_index: int) -> None:
@@ -301,18 +313,71 @@ class KanbanWindow(QMainWindow):
             self._project_id = None
             self._load_projects()
 
+    # ── close hook：開いていた時間をスケジューリングに記録 ───────────────────
+
+    def closeEvent(self, event) -> None:
+        sched_id = self.db.system_ids.get("scheduling_task_id")
+        ended_at = datetime.now()
+        duration = int((ended_at - self._opened_at).total_seconds())
+        # 一瞬だけ開いて閉じた事故を弾く（5秒未満は記録しない）
+        if sched_id is not None and duration >= 5:
+            self.db.create_time_log(TimeLog(
+                task_id=sched_id,
+                started_at=self._opened_at,
+                ended_at=ended_at,
+                duration_sec=duration,
+            ))
+        super().closeEvent(event)
+
     def _add_phase(self) -> None:
         if self._project_id is None:
             return
-        name, ok = QInputDialog.getText(self, "フェーズ追加", "名前:")
-        if not ok or not name.strip():
+        dlg = _PhaseAddDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name = dlg.name()
+        if not name:
             return
         existing = self.db.list_phases(self._project_id)
         order = (max((ph.order_index for ph in existing), default=-1)) + 1
         self.db.create_phase(Phase(
             project_id=self._project_id,
-            name=name.strip(),
+            name=name,
             deadline=date.today(),
             order_index=order,
+            is_routine=dlg.is_routine(),
         ))
         self._reload_board()
+
+
+class _PhaseAddDialog(QDialog):
+    """名前入力＋ルーティンチェックの小ダイアログ。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("フェーズを追加")
+        self.setMinimumWidth(320)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("名前"))
+        self._name = QLineEdit()
+        layout.addWidget(self._name)
+        self._cb = QCheckBox("ルーティンフェーズにする（タスクを繰り返し設定可能）")
+        layout.addWidget(self._cb)
+
+        bb = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+            parent=self,
+        )
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        layout.addWidget(bb)
+
+        self._name.setFocus()
+
+    def name(self) -> str:
+        return self._name.text().strip()
+
+    def is_routine(self) -> bool:
+        return self._cb.isChecked()

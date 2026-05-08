@@ -11,6 +11,7 @@ from task_timer.ui.timer_window import TimerWindow
 def main() -> None:
     conn = connect()
     db = Database(conn)
+    db.init_default_setup()
 
     app = QApplication(sys.argv)
     window = TimerWindow(db)

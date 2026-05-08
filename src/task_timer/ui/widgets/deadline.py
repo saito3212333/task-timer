@@ -203,23 +203,23 @@ class DeadlineBadge(QPushButton):
 
     def set_deadline(self, deadline: date | None) -> None:
         if deadline is None:
-            self.setText("+ 締切")
+            self.setText("〆 +")
             self.setStyleSheet(
                 f"color: {MUTED}; background: transparent; border: none;"
-                " padding: 1px 4px; font-size: 11px;"
+                " padding: 1px 4px; font-size: 10px;"
             )
             return
         delta = (deadline - date.today()).days
         if delta == 0:
-            text = "今日"
+            text = "〆 今日"
         elif delta == 1:
-            text = "明日"
+            text = "〆 明日"
         elif delta == -1:
-            text = "昨日"
+            text = "〆 昨日"
         elif -7 < delta < 0:
-            text = f"{-delta}日前"
+            text = f"〆 {-delta}日前"
         else:
-            text = f"{deadline.month}/{deadline.day}"
+            text = f"〆 {deadline.month}/{deadline.day}"
 
         if delta <= 0:
             color = DANGER
@@ -230,5 +230,5 @@ class DeadlineBadge(QPushButton):
         self.setText(text)
         self.setStyleSheet(
             f"color: {color}; background: transparent; border: none;"
-            " padding: 1px 4px; font-size: 11px;"
+            " padding: 1px 4px; font-size: 10px;"
         )

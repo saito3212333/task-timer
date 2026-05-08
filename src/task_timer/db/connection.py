@@ -33,7 +33,23 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     with conn:
         for stmt in DDL_STATEMENTS:
             conn.execute(stmt)
+        _migrate_existing(conn)
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
             ("version", str(SCHEMA_VERSION)),
         )
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_existing(conn: sqlite3.Connection) -> None:
+    """既存DBに新カラムがなければ ALTER で追加する（v1→v2）。"""
+    if "is_routine" not in _column_names(conn, "phases"):
+        conn.execute(
+            "ALTER TABLE phases ADD COLUMN is_routine INTEGER NOT NULL DEFAULT 0"
+        )
+    if "recurrence" not in _column_names(conn, "tasks"):
+        # CHECK制約はALTERでは付けられないが、INSERT/UPDATEは値を絞っているのでOK。
+        conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT")

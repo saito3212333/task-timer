@@ -55,28 +55,20 @@ BTN_DANGER = f"""
     QPushButton:hover {{ background: #dc2626; }}
 """
 
+# 文字のみのスタート／ストップ（他のテキストと同じMUTED色）
 BTN_START_STYLE = f"""
     QPushButton {{
-        background: {ACCENT};
-        color: white;
+        background: transparent;
+        color: {MUTED};
         border: none;
-        border-radius: 6px;
-        font-size: 14px;
+        font-size: 16px;
+        font-weight: 600;
     }}
-    QPushButton:hover {{ background: #2563eb; }}
-    QPushButton:disabled {{ background: #cbd5e1; color: #94a3b8; }}
+    QPushButton:hover {{ color: {TEXT}; }}
+    QPushButton:disabled {{ color: #cbd5e1; }}
 """
 
-BTN_STOP_STYLE = f"""
-    QPushButton {{
-        background: {DANGER};
-        color: white;
-        border: none;
-        border-radius: 6px;
-        font-size: 14px;
-    }}
-    QPushButton:hover {{ background: #dc2626; }}
-"""
+BTN_STOP_STYLE = BTN_START_STYLE
 
 LINK_STYLE = f"""
     QPushButton {{

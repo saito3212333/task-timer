@@ -80,6 +80,14 @@ class PhaseColumn(QWidget):
         )
         self.progress_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
 
+        self.routine_badge = QLabel("🔁")
+        self.routine_badge.setStyleSheet(
+            f"color: {MUTED}; background: transparent; font-size: 11px;"
+        )
+        self.routine_badge.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.routine_badge.setVisible(bool(phase.is_routine))
+        self.routine_badge.setToolTip("ルーティンフェーズ")
+
         self.deadline_badge = DeadlineBadge(phase.deadline)
         self.deadline_badge.clicked.connect(self._open_deadline_picker)
 
@@ -88,9 +96,13 @@ class PhaseColumn(QWidget):
         btn_del.setFlat(True)
         btn_del.setStyleSheet(f"color: {MUTED}; font-size: 14px; background: transparent;")
         btn_del.clicked.connect(lambda: self.phase_deleted.emit(phase.id))
+        # システムフェーズ（汎用→ルーティン/スポット）は削除させない
+        if phase.id is not None and db.is_system_phase(phase.id):
+            btn_del.setVisible(False)
 
         header.addWidget(self.title_edit, 1)
         header.addWidget(self.progress_label)
+        header.addWidget(self.routine_badge)
         header.addWidget(self.deadline_badge)
         header.addWidget(btn_del)
         outer.addLayout(header)
@@ -99,7 +111,7 @@ class PhaseColumn(QWidget):
         self.cards_layout = QVBoxLayout()
         self.cards_layout.setSpacing(4)
         for t in tasks:
-            card = TaskCard(t, db)
+            card = TaskCard(t, db, is_in_routine_phase=phase.is_routine)
             card.deleted.connect(self.task_deleted.emit)
             card.status_changed.connect(self.task_status_changed.emit)
             card.split_requested.connect(self.task_split_requested.emit)
