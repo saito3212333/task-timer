@@ -36,12 +36,18 @@ from task_timer.ui.widgets.phase_column import PhaseColumn
 
 
 class KanbanWindow(QMainWindow):
-    def __init__(self, db: Database, initial_project_id: int | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        initial_project_id: int | None = None,
+        timer_window: QMainWindow | None = None,
+    ) -> None:
         super().__init__()
         self.db = db
         self._project_id: int | None = None
         self._initial_project_id: int | None = initial_project_id
         self._hide_done: bool = False
+        self._timer_window = timer_window
         # スケジューリング時間：カンバンを開いている間を計測する
         self._opened_at: datetime = datetime.now()
 
@@ -78,6 +84,11 @@ class KanbanWindow(QMainWindow):
         btn_add_proj.setStyleSheet(BTN_STYLE)
         btn_add_proj.clicked.connect(self._add_project)
         tl.addWidget(btn_add_proj)
+
+        self._btn_rename_proj = QPushButton("名前変更")
+        self._btn_rename_proj.setStyleSheet(BTN_STYLE)
+        self._btn_rename_proj.clicked.connect(self._rename_project)
+        tl.addWidget(self._btn_rename_proj)
 
         self._btn_del_proj = QPushButton("削除")
         self._btn_del_proj.setStyleSheet(BTN_DANGER)
@@ -128,9 +139,10 @@ class KanbanWindow(QMainWindow):
 
     def _on_project_changed(self) -> None:
         self._project_id = self.project_cmb.currentData()
-        # システムプロジェクトは削除させない
+        # システムプロジェクトは削除・名前変更させない
         is_system = self._project_id is not None and self.db.is_system_project(self._project_id)
         self._btn_del_proj.setEnabled(not is_system)
+        self._btn_rename_proj.setEnabled(self._project_id is not None and not is_system)
         self._reload_board()
 
     def _on_hide_done_toggled(self, checked: bool) -> None:
@@ -178,6 +190,8 @@ class KanbanWindow(QMainWindow):
                     col.task_status_changed.connect(self._on_task_status_changed)
                     col.task_dropped.connect(self._on_task_dropped)
                     col.task_split_requested.connect(self._on_task_split)
+                    col.task_start_timer.connect(self._on_task_start_timer)
+                    col.task_logs_edit.connect(self._on_task_logs_edit)
                     col.phase_deleted.connect(self._on_phase_deleted)
                     layout.addWidget(col)
 
@@ -281,6 +295,16 @@ class KanbanWindow(QMainWindow):
         self.db.delete_task(parent.id)
         self._schedule_reload()
 
+    def _on_task_start_timer(self, task_id: int) -> None:
+        if self._timer_window is not None:
+            self._timer_window.select_task(task_id)
+        self.close()
+
+    def _on_task_logs_edit(self, task_id: int) -> None:
+        from task_timer.ui.widgets.time_logs_dialog import TimeLogsDialog
+        dlg = TimeLogsDialog(self.db, task_id, self)
+        dlg.exec()
+
     def _on_phase_deleted(self, phase_id: int) -> None:
         reply = QMessageBox.question(
             self, "削除確認", "このフェーズを削除しますか？\n（タスクもすべて削除されます）"
@@ -313,6 +337,23 @@ class KanbanWindow(QMainWindow):
             self._project_id = None
             self._load_projects()
 
+    def _rename_project(self) -> None:
+        if self._project_id is None or self.db.is_system_project(self._project_id):
+            return
+        current = self.project_cmb.currentText()
+        new_name, ok = QInputDialog.getText(
+            self, "プロジェクト名の変更", "新しい名前", text=current
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == current:
+            return
+        self.db.update_project(self._project_id, name=new_name)
+        keep_id = self._project_id
+        self._initial_project_id = keep_id
+        self._load_projects()
+
     # ── close hook：開いていた時間をスケジューリングに記録 ───────────────────
 
     def closeEvent(self, event) -> None:
@@ -327,6 +368,11 @@ class KanbanWindow(QMainWindow):
                 ended_at=ended_at,
                 duration_sec=duration,
             ))
+        # タイマー画面へ戻す
+        if self._timer_window is not None:
+            self._timer_window.show()
+            self._timer_window.raise_()
+            self._timer_window.activateWindow()
         super().closeEvent(event)
 
     def _add_phase(self) -> None:

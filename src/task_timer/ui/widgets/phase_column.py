@@ -28,6 +28,8 @@ class PhaseColumn(QWidget):
     task_status_changed  = Signal(int, bool)       # task_id, is_done
     task_dropped         = Signal(int, int, int)   # task_id, target_phase_id, insert_index
     task_split_requested = Signal(int)             # task_id
+    task_start_timer     = Signal(int)             # task_id
+    task_logs_edit       = Signal(int)             # task_id
     phase_deleted        = Signal(int)             # phase_id
 
     def __init__(
@@ -115,6 +117,8 @@ class PhaseColumn(QWidget):
             card.deleted.connect(self.task_deleted.emit)
             card.status_changed.connect(self.task_status_changed.emit)
             card.split_requested.connect(self.task_split_requested.emit)
+            card.start_timer_requested.connect(self.task_start_timer.emit)
+            card.logs_edit_requested.connect(self.task_logs_edit.emit)
             self.cards_layout.addWidget(card)
         outer.addLayout(self.cards_layout)
 

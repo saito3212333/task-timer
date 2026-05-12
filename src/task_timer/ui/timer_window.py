@@ -215,6 +215,23 @@ class TimerWindow(QMainWindow):
 
         self._reload_tasks(self._cmb_project.currentData(), preferred_task_id=cur_task_id)
 
+    def select_task(self, task_id: int) -> None:
+        """指定タスクが見えるようにプロジェクト→タスクを選ぶ。計測中は無視。"""
+        if self._running:
+            return
+        try:
+            task = self.db.get_task(task_id)
+            phase = self.db.get_phase(task.phase_id)
+        except KeyError:
+            return
+        idx = self._cmb_project.findData(phase.project_id)
+        if idx < 0:
+            return
+        self._cmb_project.blockSignals(True)
+        self._cmb_project.setCurrentIndex(idx)
+        self._cmb_project.blockSignals(False)
+        self._reload_tasks(phase.project_id, preferred_task_id=task_id)
+
     def event(self, ev) -> bool:
         if ev.type() == QEvent.WindowActivate:
             self._refresh_from_db()
@@ -490,12 +507,15 @@ class TimerWindow(QMainWindow):
         if self._manager_window is None or not self._manager_window.isVisible():
             current_project_id = self._cmb_project.currentData()
             self._manager_window = KanbanWindow(
-                self.db, initial_project_id=current_project_id
+                self.db,
+                initial_project_id=current_project_id,
+                timer_window=self,
             )
             self._manager_window.show()
         else:
             self._manager_window.raise_()
             self._manager_window.activateWindow()
+        self.hide()
 
     # ──────────────────────────────── 終了ガード
 

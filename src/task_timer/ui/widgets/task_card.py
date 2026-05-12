@@ -24,9 +24,11 @@ from task_timer.ui.widgets.memo import MemoBadge
 
 
 class TaskCard(QWidget):
-    deleted          = Signal(int)        # task_id
-    status_changed   = Signal(int, bool)  # task_id, is_done
-    split_requested  = Signal(int)        # task_id
+    deleted              = Signal(int)        # task_id
+    status_changed       = Signal(int, bool)  # task_id, is_done
+    split_requested      = Signal(int)        # task_id
+    start_timer_requested = Signal(int)       # task_id
+    logs_edit_requested  = Signal(int)        # task_id
 
     MIME_TYPE = "application/x-task-timer-task-id"
 
@@ -161,6 +163,15 @@ class TaskCard(QWidget):
 
         is_system = self.task.id is not None and self.db.is_system_task(self.task.id)
 
+        # 「▶ このタスクで計測」「📝 履歴・ログ編集」（先頭）
+        act_start = act_logs = None
+        if not is_system and self.task.status != "done":
+            act_start = menu.addAction("▶ このタスクで計測")
+        if not is_system:
+            act_logs = menu.addAction("履歴・ログ編集…")
+        if act_start is not None or act_logs is not None:
+            menu.addSeparator()
+
         # ルーティンフェーズのみ「繰り返し」サブメニューを出す
         act_rec_off = act_rec_daily = act_rec_weekly = None
         if self.is_in_routine_phase and not is_system:
@@ -180,7 +191,11 @@ class TaskCard(QWidget):
 
         if chosen is None:
             return
-        if chosen is act_split:
+        if chosen is act_start:
+            self.start_timer_requested.emit(self.task.id)
+        elif chosen is act_logs:
+            self.logs_edit_requested.emit(self.task.id)
+        elif chosen is act_split:
             self.split_requested.emit(self.task.id)
         elif chosen is act_del:
             self.deleted.emit(self.task.id)
