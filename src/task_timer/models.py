@@ -40,6 +40,7 @@ class Task:
     phase_id: int
     name: str
     id: int | None = None
+    description: str | None = None
     status: Status = "active"
     order_index: int = 0
     priority: Priority = "normal"

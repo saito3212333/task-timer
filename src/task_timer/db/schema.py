@@ -3,7 +3,7 @@
 All timestamps stored as ISO-8601 strings (TEXT). Dates as YYYY-MM-DD.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL_STATEMENTS: list[str] = [
     """
@@ -39,6 +39,7 @@ DDL_STATEMENTS: list[str] = [
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         phase_id        INTEGER NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
         name            TEXT    NOT NULL,
+        description     TEXT,
         status          TEXT    NOT NULL DEFAULT 'active'
                                 CHECK (status IN ('active','done','archived')),
         order_index     INTEGER NOT NULL DEFAULT 0,

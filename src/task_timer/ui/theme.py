@@ -55,7 +55,7 @@ BTN_DANGER = f"""
     QPushButton:hover {{ background: #dc2626; }}
 """
 
-# 文字のみのスタート／ストップ（他のテキストと同じMUTED色）
+# 文字のみのスタート／ストップ（他のテキストと同じMUTED色、ホバーで計測中と同じ緑）
 BTN_START_STYLE = f"""
     QPushButton {{
         background: transparent;
@@ -64,7 +64,7 @@ BTN_START_STYLE = f"""
         font-size: 16px;
         font-weight: 600;
     }}
-    QPushButton:hover {{ color: {TEXT}; }}
+    QPushButton:hover {{ color: {GREEN}; }}
     QPushButton:disabled {{ color: #cbd5e1; }}
 """
 
@@ -78,7 +78,18 @@ LINK_STYLE = f"""
         font-size: 12px;
         padding: 2px 8px;
     }}
-    QPushButton:hover {{ color: {TEXT}; }}
+    QPushButton:hover {{ color: {GREEN}; }}
     QPushButton:disabled {{ color: #cbd5e1; }}
-    QPushButton:checked {{ color: {TEXT}; }}
+    QPushButton:checked {{ color: {GREEN}; }}
+"""
+
+# QToolTip: 濃いネイビー背景 + 白文字で可読性確保
+TOOLTIP_STYLE = f"""
+QToolTip {{
+    background-color: {TOPBAR_BG};
+    color: #f1f5f9;
+    border: 1px solid #475569;
+    border-radius: 4px;
+    padding: 6px 8px;
+}}
 """

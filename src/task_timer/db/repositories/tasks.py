@@ -13,12 +13,13 @@ class TasksMixin:
         with self.tx() as c:
             cur = c.execute(
                 """
-                INSERT INTO tasks(phase_id, name, status, order_index, priority, deadline, planned_hours, recurrence)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks(phase_id, name, description, status, order_index, priority, deadline, planned_hours, recurrence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.phase_id,
                     task.name,
+                    task.description,
                     task.status,
                     task.order_index,
                     task.priority,
@@ -64,6 +65,7 @@ class TasksMixin:
             new_clone = self.create_task(Task(
                 phase_id=task.phase_id,
                 name=task.name,
+                description=task.description,
                 status="active",
                 order_index=task.order_index,
                 priority=task.priority,

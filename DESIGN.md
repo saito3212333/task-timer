@@ -53,7 +53,7 @@
 ```
 projects(id, name, status, deadline?, planned_hours, planned_money, created_at, updated_at)
 phases  (id, project_id→, name, status, order_index, deadline ★必須, planned_hours, ...)
-tasks   (id, phase_id→,   name, status, order_index, priority, deadline?, planned_hours, ...)
+tasks   (id, phase_id→,   name, description?, status, order_index, priority, deadline?, planned_hours, recurrence?, ...)
 time_logs(id, task_id→,   started_at, ended_at, duration_sec, note, created_at)
 ```
 
@@ -64,7 +64,7 @@ time_logs(id, task_id→,   started_at, ended_at, duration_sec, note, created_at
 - **FK**：ON DELETE CASCADE（プロジェクト削除で連鎖）
 - **時刻形式**：すべてISO-8601文字列（TEXT列）
 
-スキーマDDLは `src/task_timer/db/schema.py`。`schema_meta` テーブルでバージョン管理（現在 v1）。
+スキーマDDLは `src/task_timer/db/schema.py`。`schema_meta` テーブルでバージョン管理（現在 v3）。
 
 ### 「フェーズなし」の小さい案件の扱い
 

@@ -56,6 +56,7 @@ def _row_task(r: sqlite3.Row) -> Task:
         id=r["id"],
         phase_id=r["phase_id"],
         name=r["name"],
+        description=r["description"],
         status=r["status"],
         order_index=r["order_index"],
         priority=r["priority"],

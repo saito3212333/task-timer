@@ -140,7 +140,7 @@ class TimerWindow(QMainWindow):
         layout.addWidget(self._memo_edit)
 
         # スタート⇄ストップ統合ボタン（中央寄せの小さめボタン）
-        self._btn_play = QPushButton("▶  スタート")
+        self._btn_play = QPushButton("  ▶︎  ")
         self._btn_play.setFixedSize(180, 34)
         self._btn_play.setStyleSheet(BTN_START_STYLE)
         self._btn_play.clicked.connect(self._on_play_toggle)
@@ -155,7 +155,7 @@ class TimerWindow(QMainWindow):
         done_row = QHBoxLayout(self._done_widget)
         done_row.setContentsMargins(0, 0, 0, 0)
         done_row.addStretch()
-        self._btn_done = QPushButton("✓ このタスクを完了")
+        self._btn_done = QPushButton("  ✔︎  ")
         self._btn_done.setFlat(True)
         self._btn_done.setStyleSheet(LINK_STYLE)
         self._btn_done.clicked.connect(self._on_complete_task)
@@ -318,12 +318,12 @@ class TimerWindow(QMainWindow):
     def _update_controls(self) -> None:
         has_task = self._current_task_id() is not None
         if self._running:
-            self._btn_play.setText("⏹  ストップ")
+            self._btn_play.setText("  ◼︎   ")
             self._btn_play.setStyleSheet(BTN_STOP_STYLE)
             self._btn_play.setEnabled(True)
             self._btn_done.setEnabled(False)
         else:
-            self._btn_play.setText("▶  スタート")
+            self._btn_play.setText("  ▶︎  ")
             self._btn_play.setStyleSheet(BTN_START_STYLE)
             self._btn_play.setEnabled(has_task)
             self._btn_done.setEnabled(has_task)
